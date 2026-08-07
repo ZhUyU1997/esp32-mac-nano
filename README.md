@@ -1,7 +1,7 @@
 <h1 align="center">esp32-mac-nano</h1>
 
 <p align="center">
-  [English](README.md) | [中文](README.zh.md)
+  <a href="README.md">English</a> | <a href="README.zh.md">中文</a>
 </p>
 
 <p align="center">
