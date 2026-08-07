@@ -1,0 +1,31 @@
+build/
+sdkconfig
+sdkconfig.old
+managed_components
+ref
+.vscode
+.xmake
+.env
+upgrade.bin
+sdcard-*.zip
+webflash-*.zip
+web/dist-flash/
+.reasonix/*
+hd.img
+macintosh/hd_v0.img
+macintosh/hd_v1.img
+macintosh/disk/
+
+# 版权内容 — Apple ROM 及反汇编，用户自备，不入库
+macintosh/rom.bin
+macintosh/plus-rom-listing.asm
+
+# 内部工具
+# tools/djjr — 57MB 带调试符号的 x86-64 二进制，不公开
+tools/djjr
+
+# Mac 68k 应用构建产物（源码在 mac-app/，产物不入库）
+mac-app/*/build/
+node_modules
+# playwright-cli local test artifacts
+.playwright-cli/

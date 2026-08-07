@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "skills": {
+    "liteparse": {
+      "source": "run-llama/llamaparse-agent-skills",
+      "sourceType": "github",
+      "skillPath": "skills/liteparse/SKILL.md",
+      "computedHash": "7f91112b713a4a7e6f2e30de05fa5ee16ae437d657487490e1767a2072626060"
+    },
+    "playwright-cli": {
+      "source": "microsoft/playwright-cli",
+      "sourceType": "github",
+      "skillPath": "skills/playwright-cli/SKILL.md",
+      "computedHash": "f602822b51bcb6d033749c60731b8f1e80f308222fcb2e4af551905a817c6e08"
+    }
+  }
+}

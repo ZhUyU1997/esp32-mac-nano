@@ -1,0 +1,1269 @@
+diff --git a/main/CMakeLists.txt b/main/CMakeLists.txt
+index 9f2b4fe..83633d2 100644
+--- a/main/CMakeLists.txt
++++ b/main/CMakeLists.txt
+@@ -9,11 +9,13 @@ idf_component_register(SRCS
+     "arch/esp32/mach-s3/ui/settings_ui.c"
+     "arch/esp32/mach-s3/ui/upgrade_ui.c"
+     "arch/esp32/mach-s3/ui/file_picker_ui.c"
++    "arch/esp32/mach-s3/ui/ble_panel.c"
+     "arch/esp32/mach-s3/ui/font/mono_smileysans_18.c"
+     "arch/esp32/mach-s3/ui/font/mono_opposans_18.c"
+     "arch/esp32/mach-s3/driver/ble/input-ble-hid.c"
+     "arch/esp32/mach-s3/driver/ble/ble_gattc.c"
+     "arch/esp32/mach-s3/driver/ble/ble_report.c"
++    "arch/esp32/mach-s3/driver/ble/ble_dev_cache.c"
+     "tests/i2s-test.c"
+     "arch/esp32/mach-s3/sensors.c"
+     "arch/esp32/mach-s3/sensor_shm.c"
+diff --git a/main/arch/esp32/mach-s3/driver/ble/ble_dev_cache.c b/main/arch/esp32/mach-s3/driver/ble/ble_dev_cache.c
+new file mode 100644
+index 0000000..7fa87c2
+--- /dev/null
++++ b/main/arch/esp32/mach-s3/driver/ble/ble_dev_cache.c
+@@ -0,0 +1,222 @@
++#include <stdio.h>
++#include <string.h>
++#include <stdlib.h>
++#include "esp_log.h"
++#include "esp_gap_ble_api.h"
++#include "esp_gattc_api.h"
++#include "ble_priv.h"
++#include "ble_dev_cache.h"
++
++static const char *TAG = "ble_cache";
++
++/* ------------------------------------------------------------------ */
++/* Name & discovered devices cache                                    */
++/* ------------------------------------------------------------------ */
++
++#define MAX_DISCOVERED 16
++
++typedef struct {
++	uint8_t bda[6];
++	char name[48];
++	uint8_t addr_type;
++} ble_scan_entry_t;
++
++static ble_scan_entry_t s_discovered[MAX_DISCOVERED];
++static int s_discovered_count = 0;
++
++/* ------------------------------------------------------------------ */
++/* Cache management                                                   */
++/* ------------------------------------------------------------------ */
++
++void ble_dev_name_cache_set(const uint8_t *bda, const char *name)
++{
++	for (int i = 0; i < s_discovered_count; i++) {
++		if (memcmp(s_discovered[i].bda, bda, 6) == 0) {
++			snprintf(s_discovered[i].name, sizeof(s_discovered[i].name),
++				"%.*s", (int)(sizeof(s_discovered[i].name) - 1), name);
++			return;
++		}
++	}
++}
++
++static const char *name_cache_get(const uint8_t *bda)
++{
++	for (int i = 0; i < s_discovered_count; i++) {
++		if (memcmp(s_discovered[i].bda, bda, 6) == 0)
++			return s_discovered[i].name;
++	}
++	return NULL;
++}
++
++void ble_dev_discovered_add(const uint8_t *bda, uint8_t addr_type, const char *name)
++{
++	/* Don't add if already in discovered list */
++	for (int i = 0; i < s_discovered_count; i++) {
++		if (memcmp(s_discovered[i].bda, bda, 6) == 0) {
++			if (name && name[0]) {
++				snprintf(s_discovered[i].name, sizeof(s_discovered[i].name),
++					"%.*s", (int)(sizeof(s_discovered[i].name) - 1), name);
++			}
++			return;
++		}
++	}
++	/* Don't add if already paired */
++	if (is_bonded_addr(bda))
++		return;
++	/* Don't add if already connected */
++	for (int i = 0; i < MAX_BLE_DEVICES; i++) {
++		if (s_devs[i].in_use && memcmp(s_devs[i].bda, bda, 6) == 0)
++			return;
++	}
++
++	if (s_discovered_count >= MAX_DISCOVERED)
++		return;
++	memcpy(s_discovered[s_discovered_count].bda, bda, 6);
++	s_discovered[s_discovered_count].addr_type = addr_type;
++	if (name && name[0]) {
++		snprintf(s_discovered[s_discovered_count].name,
++			sizeof(s_discovered[0].name), "%.*s",
++			(int)(sizeof(s_discovered[0].name) - 1), name);
++	} else {
++		s_discovered[s_discovered_count].name[0] = '\0';
++	}
++	s_discovered_count++;
++}
++
++void ble_dev_discovered_clear(void)
++{
++	s_discovered_count = 0;
++}
++
++/* ------------------------------------------------------------------ */
++/* Paired (bonded) device queries                                      */
++/* ------------------------------------------------------------------ */
++
++int ble_get_paired_count(void)
++{
++	return esp_ble_get_bond_device_num();
++}
++
++bool ble_get_paired_info(int idx, char *name_out, size_t name_len,
++                         uint8_t *bda_out, bool *connected_out)
++{
++	int count = esp_ble_get_bond_device_num();
++	if (idx < 0 || idx >= count)
++		return false;
++
++	esp_ble_bond_dev_t *bonds = malloc(count * sizeof(esp_ble_bond_dev_t));
++	if (!bonds)
++		return false;
++	esp_ble_get_bond_device_list(&count, bonds);
++	memcpy(bda_out, bonds[idx].bd_addr, 6);
++	free(bonds);
++
++	/* Look up cached name */
++	const char *cached = name_cache_get(bda_out);
++	if (cached && cached[0])
++		snprintf(name_out, name_len, "%s", cached);
++	else
++		snprintf(name_out, name_len, "%s", addr_str(bda_out));
++
++	/* Check if connected */
++	bool conn = false;
++	for (int i = 0; i < MAX_BLE_DEVICES; i++) {
++		if (s_devs[i].in_use && memcmp(s_devs[i].bda, bda_out, 6) == 0) {
++			conn = true;
++			break;
++		}
++	}
++	if (connected_out)
++		*connected_out = conn;
++
++	return true;
++}
++
++bool ble_is_device_connected(const uint8_t *bda)
++{
++	for (int i = 0; i < MAX_BLE_DEVICES; i++) {
++		if (s_devs[i].in_use && memcmp(s_devs[i].bda, bda, 6) == 0)
++			return true;
++	}
++	return false;
++}
++
++void ble_forget_device(const uint8_t *bda)
++{
++	/* Disconnect if connected */
++	for (int i = 0; i < MAX_BLE_DEVICES; i++) {
++		if (s_devs[i].in_use && memcmp(s_devs[i].bda, bda, 6) == 0) {
++			esp_ble_gattc_close(s_gattc_if, s_devs[i].conn_id);
++			memset(&s_devs[i], 0, sizeof(s_devs[i]));
++			break;
++		}
++	}
++	/* Remove bond */
++	esp_ble_remove_bond_device(bda);
++
++	/* Remove from discovered list */
++	for (int i = 0; i < s_discovered_count; i++) {
++		if (memcmp(s_discovered[i].bda, bda, 6) == 0) {
++			s_discovered[i] = s_discovered[s_discovered_count - 1];
++			s_discovered_count--;
++			break;
++		}
++	}
++}
++
++/* ------------------------------------------------------------------ */
++/* Discovered device queries                                           */
++/* ------------------------------------------------------------------ */
++
++int ble_get_discovered_count(void)
++{
++	return s_discovered_count;
++}
++
++bool ble_get_discovered_info(int idx, char *name_out, size_t name_len,
++                             uint8_t *bda_out, uint8_t *addr_type_out)
++{
++	if (idx < 0 || idx >= s_discovered_count)
++		return false;
++
++	memcpy(bda_out, s_discovered[idx].bda, 6);
++	if (addr_type_out)
++		*addr_type_out = s_discovered[idx].addr_type;
++
++	if (s_discovered[idx].name[0])
++		snprintf(name_out, name_len, "%s", s_discovered[idx].name);
++	else
++		snprintf(name_out, name_len, "%s", addr_str(s_discovered[idx].bda));
++	return true;
++}
++
++void ble_connect_to_device(const uint8_t *bda, uint8_t addr_type)
++{
++	connect_to(bda, addr_type);
++}
++
++void ble_clear_all_bonds(void)
++{
++	/* Disconnect all */
++	for (int i = 0; i < MAX_BLE_DEVICES; i++) {
++		if (s_devs[i].in_use && s_devs[i].conn_id != 0) {
++			esp_ble_gattc_close(s_gattc_if, s_devs[i].conn_id);
++		}
++		memset(&s_devs[i], 0, sizeof(s_devs[i]));
++	}
++
++	/* Remove all bonds */
++	int count = esp_ble_get_bond_device_num();
++	if (count > 0) {
++		esp_ble_bond_dev_t *bonds = malloc(count * sizeof(esp_ble_bond_dev_t));
++		if (bonds) {
++			esp_ble_get_bond_device_list(&count, bonds);
++			for (int i = 0; i < count; i++)
++				esp_ble_remove_bond_device(bonds[i].bd_addr);
++			free(bonds);
++		}
++	}
++
++	/* Clear discovered cache */
++	ble_dev_discovered_clear();
++}
+diff --git a/main/arch/esp32/mach-s3/driver/ble/ble_dev_cache.h b/main/arch/esp32/mach-s3/driver/ble/ble_dev_cache.h
+new file mode 100644
+index 0000000..4ed40b0
+--- /dev/null
++++ b/main/arch/esp32/mach-s3/driver/ble/ble_dev_cache.h
+@@ -0,0 +1,29 @@
++#ifndef BLE_DEV_CACHE_H
++#define BLE_DEV_CACHE_H
++
++#include <stdint.h>
++#include <stdbool.h>
++#include <stddef.h>
++
++/* ── Cache management (called from GAP scan callback) ────────────── */
++void ble_dev_name_cache_set(const uint8_t *bda, const char *name);
++void ble_dev_discovered_add(const uint8_t *bda, uint8_t addr_type, const char *name);
++void ble_dev_discovered_clear(void);
++
++/* ── Paired (bonded) device queries ──────────────────────────────── */
++int  ble_get_paired_count(void);
++bool ble_get_paired_info(int idx, char *name_out, size_t name_len,
++                         uint8_t *bda_out, bool *connected_out);
++bool ble_is_device_connected(const uint8_t *bda);
++void ble_forget_device(const uint8_t *bda);
++
++/* ── Discovered device queries ───────────────────────────────────── */
++int  ble_get_discovered_count(void);
++bool ble_get_discovered_info(int idx, char *name_out, size_t name_len,
++                             uint8_t *bda_out, uint8_t *addr_type_out);
++void ble_connect_to_device(const uint8_t *bda, uint8_t addr_type);
++
++/* Clear all bonded devices */
++void ble_clear_all_bonds(void);
++
++#endif
+diff --git a/main/arch/esp32/mach-s3/driver/ble/input-ble-hid.c b/main/arch/esp32/mach-s3/driver/ble/input-ble-hid.c
+index 29aedc7..e19a361 100644
+--- a/main/arch/esp32/mach-s3/driver/ble/input-ble-hid.c
++++ b/main/arch/esp32/mach-s3/driver/ble/input-ble-hid.c
+@@ -18,6 +18,7 @@
+ #include "esp_gatt_common_api.h"
+ #include "input.h"
+ #include "ble_priv.h"
++#include "ble_dev_cache.h"
+ 
+ static const char *TAG = "ble_hid";
+ 
+@@ -50,6 +51,8 @@ const char *addr_str(const uint8_t *bda)
+ ble_dev_t s_devs[MAX_BLE_DEVICES];
+ esp_gatt_if_t s_gattc_if = ESP_GATT_IF_NONE;
+ bool s_restart_scan = false;
++static bool s_ready = false;
++static bool s_scanning = false;
+ 
+ /* ------------------------------------------------------------------ */
+ /* Slot management                                                    */
+@@ -152,10 +155,12 @@ void esp_gap_cb(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *param)
+ 	}
+ 	case ESP_GAP_BLE_SCAN_START_COMPLETE_EVT: {
+ 		ESP_LOGI(TAG, "scan started, status %d", param->scan_start_cmpl.status);
++		s_scanning = true;
+ 		break;
+ 	}
+ 	case ESP_GAP_BLE_SCAN_STOP_COMPLETE_EVT: {
+ 		ESP_LOGI(TAG, "scan stopped");
++		s_scanning = false;
+ 		if (s_restart_scan) {
+ 			s_restart_scan = false;
+ 			esp_ble_gap_start_scanning(0);
+@@ -182,6 +187,33 @@ void esp_gap_cb(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *param)
+ 			name[copy_len] = '\0';
+ 			ESP_LOGI(TAG, "SCAN: %s type=%d NAME: %s",
+ 				addr_str(p->scan_rst.bda), p->scan_rst.ble_addr_type, name);
++
++			/* Cache name and add to discovered list — HID devices only */
++			ble_dev_name_cache_set(p->scan_rst.bda, name);
++
++			/* Check for HID service UUID (0x1812) in advertising */
++			bool is_hid = false;
++			uint8_t svc_len = 0;
++			uint8_t *svc = esp_ble_resolve_adv_data_by_type(
++				p->scan_rst.ble_adv,
++				p->scan_rst.adv_data_len + p->scan_rst.scan_rsp_len,
++				ESP_BLE_AD_TYPE_16SRV_CMPL, &svc_len);
++			if (!svc) {
++				svc = esp_ble_resolve_adv_data_by_type(
++					p->scan_rst.ble_adv,
++					p->scan_rst.adv_data_len + p->scan_rst.scan_rsp_len,
++					ESP_BLE_AD_TYPE_16SRV_PART, &svc_len);
++			}
++			for (int j = 0; svc && j + 1 < svc_len; j += 2) {
++				if (svc[j] == 0x12 && svc[j + 1] == 0x18) {
++					is_hid = true;
++					break;
++				}
++			}
++
++			if (is_hid)
++				ble_dev_discovered_add(p->scan_rst.bda, p->scan_rst.ble_addr_type, name);
++
+ 			for (int i = 0; TARGET_DEVICE_NAMES[i] != NULL; i++) {
+ 				if (strcmp(name, TARGET_DEVICE_NAMES[i]) == 0) {
+ 					matched = true;
+@@ -319,5 +351,76 @@ void ble_hid_host_init(void)
+ 	}
+ 	esp_ble_gatt_set_local_mtu(200);
+ 
++	s_ready = true;
+ 	ESP_LOGI(TAG, "BLE init done, scanning…");
+ }
++
++/* ------------------------------------------------------------------ */
++/* Deinit                                                             */
++/* ------------------------------------------------------------------ */
++void ble_hid_host_deinit(void)
++{
++	if (!s_ready)
++		return;
++
++	ESP_LOGI(TAG, "BLE HID Host deinit");
++
++	/* Disconnect all devices */
++	for (int i = 0; i < MAX_BLE_DEVICES; i++) {
++		if (s_devs[i].in_use && s_devs[i].conn_id != 0) {
++			esp_ble_gattc_close(s_gattc_if, s_devs[i].conn_id);
++		}
++		memset(&s_devs[i], 0, sizeof(s_devs[i]));
++	}
++
++	s_scanning = false;
++	s_restart_scan = false;
++	s_ready = false;
++
++	esp_bluedroid_disable();
++	esp_bluedroid_deinit();
++	esp_bt_controller_disable();
++	esp_bt_controller_deinit();
++
++	ESP_LOGI(TAG, "BLE deinit complete");
++}
++
++/* ------------------------------------------------------------------ */
++/* State queries                                                       */
++/* ------------------------------------------------------------------ */
++bool ble_hid_host_is_ready(void)
++{
++	return s_ready;
++}
++
++int ble_hid_host_connected_count(void)
++{
++	int count = 0;
++	for (int i = 0; i < MAX_BLE_DEVICES; i++) {
++		if (s_devs[i].in_use)
++			count++;
++	}
++	return count;
++}
++
++void ble_hid_host_start_scan(void)
++{
++	if (!s_ready)
++		return;
++	ble_dev_discovered_clear();
++	s_scanning = true;
++	esp_ble_gap_start_scanning(0);
++}
++
++void ble_hid_host_stop_scan(void)
++{
++	if (!s_ready)
++		return;
++	s_scanning = false;
++	esp_ble_gap_stop_scanning();
++}
++
++bool ble_hid_host_is_scanning(void)
++{
++	return s_scanning;
++}
+diff --git a/main/arch/esp32/mach-s3/driver/ble/input-ble-hid.h b/main/arch/esp32/mach-s3/driver/ble/input-ble-hid.h
+index a705aa0..703acd1 100644
+--- a/main/arch/esp32/mach-s3/driver/ble/input-ble-hid.h
++++ b/main/arch/esp32/mach-s3/driver/ble/input-ble-hid.h
+@@ -1,6 +1,18 @@
+ #ifndef INPUT_BLE_HID_H
+ #define INPUT_BLE_HID_H
+ 
++#include <stdbool.h>
++#include <stdint.h>
++#include <stddef.h>
++
++#include "ble_dev_cache.h"
++
+ void ble_hid_host_init(void);
++void ble_hid_host_deinit(void);
++bool ble_hid_host_is_ready(void);
++int  ble_hid_host_connected_count(void);
++void ble_hid_host_start_scan(void);
++void ble_hid_host_stop_scan(void);
++bool ble_hid_host_is_scanning(void);
+ 
+ #endif
+diff --git a/main/arch/esp32/mach-s3/include/ble_panel.h b/main/arch/esp32/mach-s3/include/ble_panel.h
+new file mode 100644
+index 0000000..fed1f9a
+--- /dev/null
++++ b/main/arch/esp32/mach-s3/include/ble_panel.h
+@@ -0,0 +1,8 @@
++#ifndef BLE_PANEL_H
++#define BLE_PANEL_H
++
++#include "lvgl.h"
++
++void ble_panel_create(lv_obj_t *screen, int32_t x, int32_t y, int32_t w, int32_t h);
++
++#endif
+diff --git a/main/arch/esp32/mach-s3/include/settings_ui.h b/main/arch/esp32/mach-s3/include/settings_ui.h
+index cdeac12..6a5b28e 100644
+--- a/main/arch/esp32/mach-s3/include/settings_ui.h
++++ b/main/arch/esp32/mach-s3/include/settings_ui.h
+@@ -4,14 +4,20 @@
+ #include <stdbool.h>
+ #include <stddef.h>
+ #include <stdint.h>
++#include "lvgl.h"
+ #include "machine_backend.h"
+ 
+ #define SETTINGS_UI_VOLUME_MAX 25u
+ #define SETTINGS_UI_BACKLIGHT_DEFAULT 75u
+ #define SETTINGS_UI_VOLUME_DEFAULT 15u
+ 
++/* Shared UI styling */
++#define UI_BTN_RADIUS   0
++#define UI_PANEL_RADIUS 0
++
+ void mach_s3_settings_ui_bind_backend(machine_backend_t *backend);
+ void mach_s3_settings_ui_show(void);
+ bool mach_s3_settings_ui_take_exit_request(void);
++lv_obj_t *create_action_btn(lv_obj_t *parent, const char *text);
+ 
+ #endif
+diff --git a/main/arch/esp32/mach-s3/ui/ble_panel.c b/main/arch/esp32/mach-s3/ui/ble_panel.c
+new file mode 100644
+index 0000000..387ad8b
+--- /dev/null
++++ b/main/arch/esp32/mach-s3/ui/ble_panel.c
+@@ -0,0 +1,457 @@
++#include <stdint.h>
++#include <stdbool.h>
++#include <stdio.h>
++#include <string.h>
++
++#include "lvgl.h"
++#include "ble_panel.h"
++#include "ble/input-ble-hid.h"
++#include "settings_ui.h"
++
++extern const lv_font_t mono_opposans_18;
++
++/* ------------------------------------------------------------------ */
++/* Internal state                                                      */
++/* ------------------------------------------------------------------ */
++
++#define BLE_PANEL_MAX_ROWS 24
++#define BLE_PANEL_ROW_NAME_MAX 48
++
++typedef struct {
++	lv_obj_t *title_label;
++	lv_obj_t *status_label;
++	lv_obj_t *switch_obj;
++	lv_obj_t *content_panel;
++	lv_obj_t *placeholder_label;
++	lv_obj_t *device_list;
++	lv_obj_t *discovered_header;
++	lv_obj_t *rows[BLE_PANEL_MAX_ROWS];
++	char row_names[BLE_PANEL_MAX_ROWS][BLE_PANEL_ROW_NAME_MAX];
++	int row_count;
++	int selected_idx;
++	bool selected_is_paired;
++	lv_obj_t *scan_btn;
++	lv_obj_t *forget_btn;
++	lv_obj_t *scan_btn_label;
++	lv_timer_t *refresh_timer;
++	bool ble_on;
++} ble_panel_state_t;
++
++static ble_panel_state_t g_ble;
++
++/* Forward decl */
++static void on_device_row_clicked(lv_event_t *e);
++
++/* ------------------------------------------------------------------ */
++/* Helpers                                                             */
++/* ------------------------------------------------------------------ */
++
++static lv_obj_t *create_panel(lv_obj_t *parent, int32_t x, int32_t y, int32_t w, int32_t h)
++{
++	lv_obj_t *panel = lv_obj_create(parent);
++	lv_obj_set_pos(panel, x, y);
++	lv_obj_set_size(panel, w, h);
++	lv_obj_clear_flag(panel, LV_OBJ_FLAG_SCROLLABLE);
++	lv_obj_set_style_radius(panel, UI_PANEL_RADIUS, 0);
++	lv_obj_set_style_border_width(panel, 1, 0);
++	lv_obj_set_style_border_color(panel, lv_color_black(), 0);
++	lv_obj_set_style_bg_color(panel, lv_color_white(), 0);
++	lv_obj_set_style_bg_opa(panel, LV_OPA_COVER, 0);
++	lv_obj_set_style_pad_all(panel, 10, 0);
++	return panel;
++}
++
++/* ------------------------------------------------------------------ */
++/* Row creation                                                        */
++/* ------------------------------------------------------------------ */
++
++static const int32_t ROW_H = 28;
++
++static lv_obj_t *add_device_row(lv_obj_t *list, const char *text)
++{
++	lv_obj_t *row = lv_list_add_button(list, NULL, "");
++	lv_obj_clear_flag(row, LV_OBJ_FLAG_CHECKABLE);
++	lv_obj_set_width(row, lv_pct(100));
++	lv_obj_set_height(row, ROW_H);
++	lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
++	lv_obj_set_style_radius(row, 0, 0);
++	lv_obj_set_style_border_width(row, 0, LV_PART_MAIN);
++	lv_obj_set_style_bg_color(row, lv_color_white(), 0);
++	lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
++	lv_obj_set_style_pad_left(row, 4, 0);
++	lv_obj_set_style_pad_right(row, 4, 0);
++	lv_obj_set_style_pad_top(row, 1, 0);
++	lv_obj_set_style_pad_bottom(row, 1, 0);
++	lv_obj_set_style_shadow_width(row, 0, 0);
++
++	lv_obj_t *label = lv_obj_get_child(row, 0);
++	if (!label) label = lv_label_create(row);
++	lv_label_set_text(label, text);
++	lv_obj_set_style_text_color(label, lv_color_black(), 0);
++	lv_obj_set_style_text_font(label, &mono_opposans_18, 0);
++	lv_label_set_long_mode(label, LV_LABEL_LONG_DOT);
++	return row;
++}
++
++static void highlight_row(lv_obj_t *row, bool on)
++{
++	if (!row) return;
++	lv_obj_set_style_border_width(row, on ? 1 : 0, LV_PART_MAIN);
++	lv_obj_set_style_border_color(row, lv_color_black(), LV_PART_MAIN);
++	lv_obj_set_style_bg_color(row, on ? lv_color_black() : lv_color_white(), 0);
++	lv_obj_t *label = lv_obj_get_child(row, 0);
++	if (label) {
++		lv_obj_set_style_text_color(label, on ? lv_color_white() : lv_color_black(), 0);
++	}
++}
++
++/* ------------------------------------------------------------------ */
++/* UI refresh — rebuild device list from BLE APIs                      */
++/* ------------------------------------------------------------------ */
++
++static void ble_panel_refresh(void)
++{
++	if (!g_ble.ble_on || !g_ble.device_list)
++		return;
++
++	/* Save scroll position */
++	int32_t scroll_y = lv_obj_get_scroll_y(g_ble.device_list);
++
++	lv_obj_clean(g_ble.device_list);
++
++	int count = 0;
++	bool scanning = ble_hid_host_is_scanning();
++	int paired_count = ble_get_paired_count();
++	int disc_count = ble_get_discovered_count();
++	char buf[48];
++	uint8_t bda[6];
++
++	g_ble.selected_idx = -1;
++	g_ble.selected_is_paired = false;
++
++	/* ── Paired devices ──────────────────────────────────── */
++	for (int i = 0; i < paired_count && count < BLE_PANEL_MAX_ROWS; i++) {
++		bool connected = false;
++		if (!ble_get_paired_info(i, buf, sizeof(buf), bda, &connected))
++			continue;
++
++		char row_text[64];
++		snprintf(row_text, sizeof(row_text), "%s  %s",
++			connected ? "\u25CF" : "\u25CB", buf);
++
++		g_ble.rows[count] = add_device_row(g_ble.device_list, row_text);
++		(void)snprintf(g_ble.row_names[count], sizeof(g_ble.row_names[0]), "%s", buf);
++		lv_obj_add_event_cb(g_ble.rows[count], on_device_row_clicked,
++			LV_EVENT_CLICKED, (void *)(uintptr_t)(count | 0x80000000)); /* paired flag */
++		count++;
++	}
++
++	/* ── Discovered header ────────────────────────────────── */
++	if (disc_count > 0 && count > 0) {
++		g_ble.discovered_header = lv_label_create(g_ble.device_list);
++		lv_label_set_text(g_ble.discovered_header, "Discovered");
++		lv_obj_set_style_text_color(g_ble.discovered_header, lv_color_black(), 0);
++		lv_obj_set_style_text_font(g_ble.discovered_header, &mono_opposans_18, 0);
++		lv_obj_set_style_pad_left(g_ble.discovered_header, 4, 0);
++	} else {
++		g_ble.discovered_header = NULL;
++	}
++
++	/* ── Discovered devices ────────────────────────────────── */
++	for (int i = 0; i < disc_count && count < BLE_PANEL_MAX_ROWS; i++) {
++		uint8_t addr_type = 0;
++		if (!ble_get_discovered_info(i, buf, sizeof(buf), bda, &addr_type))
++			continue;
++
++		char row_text[64];
++		snprintf(row_text, sizeof(row_text), "\u2726 %s  [Pair]", buf);
++
++		g_ble.rows[count] = add_device_row(g_ble.device_list, row_text);
++		(void)snprintf(g_ble.row_names[count], sizeof(g_ble.row_names[0]), "%s", buf);
++		lv_obj_add_event_cb(g_ble.rows[count], on_device_row_clicked,
++			LV_EVENT_CLICKED, (void *)(uintptr_t)(count)); /* not paired */
++		count++;
++	}
++
++	g_ble.row_count = count;
++
++	/* Restore scroll */
++	lv_obj_scroll_to_y(g_ble.device_list, scroll_y, LV_ANIM_OFF);
++
++	/* ── Status label ─────────────────────────────────────── */
++	if (scanning) {
++		snprintf(buf, sizeof(buf), "Scanning\u2026");
++	} else if (paired_count > 0) {
++		int conn = ble_hid_host_connected_count();
++		snprintf(buf, sizeof(buf), "%d connected", conn);
++	} else {
++		snprintf(buf, sizeof(buf), "Ready");
++	}
++	if (g_ble.status_label)
++		lv_label_set_text(g_ble.status_label, buf);
++
++	/* ── Scan button text ─────────────────────────────────── */
++	if (g_ble.scan_btn_label)
++		lv_label_set_text(g_ble.scan_btn_label, scanning ? "Stop" : "Scan");
++}
++
++static void ble_panel_refresh_timer_cb(lv_timer_t *t)
++{
++	(void)t;
++	if (g_ble.ble_on)
++		ble_panel_refresh();
++}
++
++/* ------------------------------------------------------------------ */
++/* Device row click handler                                            */
++/* ------------------------------------------------------------------ */
++
++static void on_device_row_clicked(lv_event_t *e)
++{
++	uintptr_t data = (uintptr_t)lv_event_get_user_data(e);
++	int idx = (int)(data & 0x7FFFFFFF);
++	bool is_paired = (data & 0x80000000) != 0;
++
++	/* Deselect previous */
++	if (g_ble.selected_idx >= 0 && g_ble.selected_idx < g_ble.row_count) {
++		highlight_row(g_ble.rows[g_ble.selected_idx], false);
++	}
++
++	if (is_paired) {
++		/* Select paired device */
++		g_ble.selected_idx = idx;
++		g_ble.selected_is_paired = true;
++		highlight_row(g_ble.rows[idx], true);
++	} else {
++		/* Discovered device — initiate pairing */
++		uint8_t bda[6];
++		uint8_t addr_type = 0;
++		char name[32];
++		if (ble_get_discovered_info(idx, name, sizeof(name), bda, &addr_type)) {
++			ble_connect_to_device(bda, addr_type);
++		}
++		g_ble.selected_idx = -1;
++		g_ble.selected_is_paired = false;
++	}
++}
++
++/* ------------------------------------------------------------------ */
++/* Rebuild content panel based on BLE state                            */
++/* ------------------------------------------------------------------ */
++
++static void ble_panel_rebuild_content(void)
++{
++	if (!g_ble.content_panel)
++		return;
++
++	/* Delete dynamic content (1st child), keep button row */
++	if (g_ble.placeholder_label) {
++		lv_obj_delete(g_ble.placeholder_label);
++		g_ble.placeholder_label = NULL;
++	}
++	if (g_ble.device_list) {
++		lv_obj_delete(g_ble.device_list);
++		g_ble.device_list = NULL;
++	}
++	g_ble.selected_idx = -1;
++	g_ble.selected_is_paired = false;
++
++	if (g_ble.ble_on) {
++		g_ble.device_list = lv_list_create(g_ble.content_panel);
++		lv_obj_set_size(g_ble.device_list, lv_pct(100), LV_SIZE_CONTENT);
++		lv_obj_set_flex_grow(g_ble.device_list, 1);
++		lv_obj_set_style_border_width(g_ble.device_list, 0, 0);
++		lv_obj_set_style_bg_opa(g_ble.device_list, LV_OPA_TRANSP, 0);
++		lv_obj_set_style_pad_all(g_ble.device_list, 0, 0);
++		lv_obj_set_style_pad_row(g_ble.device_list, 2, 0);
++		lv_obj_set_scroll_dir(g_ble.device_list, LV_DIR_VER);
++		lv_obj_set_scrollbar_mode(g_ble.device_list, LV_SCROLLBAR_MODE_AUTO);
++		/* move above btn_row */
++		lv_obj_move_to_index(g_ble.device_list, 0);
++	} else {
++		g_ble.placeholder_label = lv_label_create(g_ble.content_panel);
++		lv_label_set_text(g_ble.placeholder_label, "Bluetooth is off");
++		lv_obj_set_style_text_color(g_ble.placeholder_label, lv_color_black(), 0);
++		lv_obj_set_style_text_font(g_ble.placeholder_label, &mono_opposans_18, 0);
++		lv_obj_set_flex_grow(g_ble.placeholder_label, 1);
++		lv_obj_set_style_text_align(g_ble.placeholder_label, LV_TEXT_ALIGN_CENTER, 0);
++		lv_obj_move_to_index(g_ble.placeholder_label, 0);
++	}
++
++	ble_panel_refresh();
++}
++
++/* ------------------------------------------------------------------ */
++/* Switch callback                                                     */
++/* ------------------------------------------------------------------ */
++
++static void on_switch_changed(lv_event_t *e)
++{
++	lv_obj_t *sw = lv_event_get_target_obj(e);
++	g_ble.ble_on = lv_obj_has_state(sw, LV_STATE_CHECKED);
++
++	if (g_ble.ble_on) {
++		ble_hid_host_init();
++	} else {
++		ble_hid_host_deinit();
++	}
++
++	ble_panel_rebuild_content();
++}
++
++/* ------------------------------------------------------------------ */
++/* Scan button callback                                                */
++/* ------------------------------------------------------------------ */
++
++static void on_scan_clicked(lv_event_t *e)
++{
++	(void)e;
++	if (!g_ble.ble_on)
++		return;
++
++	if (ble_hid_host_is_scanning()) {
++		ble_hid_host_stop_scan();
++	} else {
++		ble_hid_host_start_scan();
++	}
++	ble_panel_refresh();
++}
++
++/* ------------------------------------------------------------------ */
++/* Forget button callback                                              */
++/* ------------------------------------------------------------------ */
++
++static void on_forget_clicked(lv_event_t *e)
++{
++	(void)e;
++	if (!g_ble.ble_on)
++		return;
++	if (g_ble.selected_idx < 0 || !g_ble.selected_is_paired)
++		return;
++
++	const char *name = g_ble.row_names[g_ble.selected_idx];
++
++	/* Find BDA from paired list */
++	uint8_t bda[6] = {0};
++	char buf[48];
++	for (int i = 0; i < ble_get_paired_count(); i++) {
++		bool conn;
++		if (ble_get_paired_info(i, buf, sizeof(buf), bda, &conn)) {
++			if (strcmp(buf, name) == 0)
++				break;
++		}
++	}
++
++	ble_forget_device(bda);
++	g_ble.selected_idx = -1;
++	g_ble.selected_is_paired = false;
++	ble_panel_refresh();
++}
++
++static void on_clear_clicked(lv_event_t *e)
++{
++	(void)e;
++	ble_clear_all_bonds();
++	g_ble.selected_idx = -1;
++	g_ble.selected_is_paired = false;
++	ble_panel_refresh();
++}
++
++/* ------------------------------------------------------------------ */
++/* Public API                                                          */
++/* ------------------------------------------------------------------ */
++
++void ble_panel_create(lv_obj_t *screen, int32_t x, int32_t y, int32_t w, int32_t h)
++{
++	memset(&g_ble, 0, sizeof(g_ble));
++	g_ble.selected_idx = -1;
++
++	const int32_t title_h = 22;
++	const int32_t btn_w = 76;
++	const int32_t btn_h = 30;
++	const int32_t btn_gap = 8;
++	const int32_t panel_h = h - title_h;
++
++	/* ── Title row ──────────────────────────────────────── */
++	g_ble.title_label = lv_label_create(screen);
++	lv_label_set_text(g_ble.title_label, "Bluetooth");
++	lv_obj_set_style_text_color(g_ble.title_label, lv_color_black(), 0);
++	lv_obj_set_style_text_font(g_ble.title_label, &mono_opposans_18, 0);
++	lv_obj_set_pos(g_ble.title_label, x + 2, y);
++
++	/* Status — right side of title, left of switch */
++	g_ble.status_label = lv_label_create(screen);
++	lv_label_set_text(g_ble.status_label, "Off");
++	lv_obj_set_style_text_color(g_ble.status_label, lv_color_black(), 0);
++	lv_obj_set_style_text_font(g_ble.status_label, &mono_opposans_18, 0);
++	lv_obj_set_style_text_align(g_ble.status_label, LV_TEXT_ALIGN_RIGHT, 0);
++
++	/* Switch — rightmost */
++	const int32_t sw_w = 44;
++	const int32_t sw_h = 22;
++	g_ble.switch_obj = lv_switch_create(screen);
++	lv_obj_set_size(g_ble.switch_obj, sw_w, sw_h);
++	lv_obj_set_pos(g_ble.switch_obj, x + w - sw_w, y);
++	lv_obj_set_style_bg_color(g_ble.switch_obj, lv_color_white(), LV_PART_MAIN);
++	lv_obj_set_style_bg_opa(g_ble.switch_obj, LV_OPA_COVER, LV_PART_MAIN);
++	lv_obj_set_style_border_width(g_ble.switch_obj, 1, LV_PART_MAIN);
++	lv_obj_set_style_border_color(g_ble.switch_obj, lv_color_black(), LV_PART_MAIN);
++	lv_obj_set_style_bg_color(g_ble.switch_obj, lv_color_black(), LV_PART_INDICATOR);
++	lv_obj_set_style_bg_opa(g_ble.switch_obj, LV_OPA_COVER, LV_PART_INDICATOR);
++	lv_obj_set_style_bg_color(g_ble.switch_obj, lv_color_white(), LV_PART_KNOB);
++	lv_obj_set_style_bg_opa(g_ble.switch_obj, LV_OPA_COVER, LV_PART_KNOB);
++	lv_obj_set_style_border_width(g_ble.switch_obj, 1, LV_PART_KNOB);
++	lv_obj_set_style_border_color(g_ble.switch_obj, lv_color_black(), LV_PART_KNOB);
++	lv_obj_add_event_cb(g_ble.switch_obj, on_switch_changed, LV_EVENT_VALUE_CHANGED, NULL);
++
++	/* Position status label between title and switch */
++	{
++		int32_t sw_x = x + w - sw_w;
++		lv_obj_set_width(g_ble.status_label, sw_x - x - 80 - 6);
++		lv_obj_set_pos(g_ble.status_label, x + 80, y);
++	}
++
++	/* ── Content panel ──────────────────────────────────── */
++	const int32_t panel_top = y + title_h;
++	g_ble.content_panel = create_panel(screen, x, panel_top, w, panel_h);
++	lv_obj_set_layout(g_ble.content_panel, LV_LAYOUT_FLEX);
++	lv_obj_set_flex_flow(g_ble.content_panel, LV_FLEX_FLOW_COLUMN);
++
++	/* Default: BLE is off → show placeholder */
++	g_ble.placeholder_label = lv_label_create(g_ble.content_panel);
++	lv_label_set_text(g_ble.placeholder_label, "Bluetooth is off");
++	lv_obj_set_style_text_color(g_ble.placeholder_label, lv_color_black(), 0);
++	lv_obj_set_style_text_font(g_ble.placeholder_label, &mono_opposans_18, 0);
++	lv_obj_set_flex_grow(g_ble.placeholder_label, 1);
++	lv_obj_set_style_text_align(g_ble.placeholder_label, LV_TEXT_ALIGN_CENTER, 0);
++
++	/* ── Bottom buttons (inside panel) ──────────────────── */
++	lv_obj_t *btn_row = lv_obj_create(g_ble.content_panel);
++	lv_obj_set_size(btn_row, lv_pct(100), LV_SIZE_CONTENT);
++	lv_obj_set_flex_grow(btn_row, 0);
++	lv_obj_clear_flag(btn_row, LV_OBJ_FLAG_SCROLLABLE);
++	lv_obj_set_style_border_width(btn_row, 0, 0);
++	lv_obj_set_style_bg_opa(btn_row, LV_OPA_TRANSP, 0);
++	lv_obj_set_style_pad_all(btn_row, 0, 0);
++	lv_obj_set_layout(btn_row, LV_LAYOUT_FLEX);
++	lv_obj_set_flex_flow(btn_row, LV_FLEX_FLOW_ROW);
++	lv_obj_set_flex_align(btn_row, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
++	lv_obj_set_style_pad_column(btn_row, btn_gap, 0);
++	lv_obj_set_style_pad_top(btn_row, 6, 0);
++
++	g_ble.scan_btn = create_action_btn(btn_row, "Scan");
++	lv_obj_set_size(g_ble.scan_btn, btn_w, btn_h);
++	g_ble.scan_btn_label = lv_obj_get_child(g_ble.scan_btn, 0);
++	lv_obj_add_event_cb(g_ble.scan_btn, on_scan_clicked, LV_EVENT_CLICKED, NULL);
++
++	g_ble.forget_btn = create_action_btn(btn_row, "Forget");
++	lv_obj_set_size(g_ble.forget_btn, btn_w, btn_h);
++	lv_obj_add_event_cb(g_ble.forget_btn, on_forget_clicked, LV_EVENT_CLICKED, NULL);
++
++	lv_obj_t *clear_btn = create_action_btn(btn_row, "Clear");
++	lv_obj_set_size(clear_btn, btn_w, btn_h);
++	lv_obj_add_event_cb(clear_btn, on_clear_clicked, LV_EVENT_CLICKED, NULL);
++
++	/* ── Periodic refresh timer ─────────────────────────── */
++	g_ble.refresh_timer = lv_timer_create(ble_panel_refresh_timer_cb, 500, NULL);
++}
+diff --git a/main/arch/esp32/mach-s3/ui/settings_ui.c b/main/arch/esp32/mach-s3/ui/settings_ui.c
+index ef5f239..86f1a00 100644
+--- a/main/arch/esp32/mach-s3/ui/settings_ui.c
++++ b/main/arch/esp32/mach-s3/ui/settings_ui.c
+@@ -6,6 +6,7 @@
+ 
+ #include "lvgl.h"
+ #include "settings_ui.h"
++#include "ble_panel.h"
+ 
+ extern const lv_font_t mono_opposans_18;
+ 
+@@ -118,7 +119,7 @@ static void settings_ui_show_toast(const char *msg, bool is_error)
+ 	// lv_obj_set_style_border_color(g_settings_ui.toast_box, lv_color_white(), 0);
+ 	lv_obj_set_style_bg_color(g_settings_ui.toast_box, lv_color_black(), 0);
+ 	lv_obj_set_style_bg_opa(g_settings_ui.toast_box, LV_OPA_COVER, 0);
+-	lv_obj_set_style_radius(g_settings_ui.toast_box, 14, 0);
++	lv_obj_set_style_radius(g_settings_ui.toast_box, UI_PANEL_RADIUS, 0);
+ 	lv_obj_set_style_pad_left(g_settings_ui.toast_box, 12, 0);
+ 	lv_obj_set_style_pad_right(g_settings_ui.toast_box, 12, 0);
+ 	lv_obj_set_style_pad_top(g_settings_ui.toast_box, 5, 0);
+@@ -304,10 +305,10 @@ static void on_reboot_clicked(lv_event_t *e)
+ 	g_settings_ui.backend->reboot(g_settings_ui.backend);
+ }
+ 
+-static lv_obj_t *create_action_btn(lv_obj_t *parent, const char *text)
++lv_obj_t *create_action_btn(lv_obj_t *parent, const char *text)
+ {
+ 	lv_obj_t *btn = lv_btn_create(parent);
+-	lv_obj_set_style_radius(btn, 8, 0);
++	lv_obj_set_style_radius(btn, UI_BTN_RADIUS, 0);
+ 	lv_obj_set_style_border_width(btn, 1, 0);
+ 	lv_obj_set_style_border_color(btn, lv_color_black(), 0);
+ 	lv_obj_set_style_bg_color(btn, lv_color_white(), 0);
+@@ -330,7 +331,7 @@ static lv_obj_t *create_section_panel(lv_obj_t *screen, int32_t x, int32_t y, in
+ 	lv_obj_set_pos(panel, x, y);
+ 	lv_obj_set_size(panel, w, h);
+ 	lv_obj_clear_flag(panel, LV_OBJ_FLAG_SCROLLABLE);
+-	lv_obj_set_style_radius(panel, 14, 0);
++	lv_obj_set_style_radius(panel, UI_PANEL_RADIUS, 0);
+ 	lv_obj_set_style_border_width(panel, 1, 0);
+ 	lv_obj_set_style_border_color(panel, lv_color_black(), 0);
+ 	lv_obj_set_style_bg_color(panel, lv_color_white(), 0);
+@@ -432,87 +433,62 @@ void mach_s3_settings_ui_show(void)
+ 	const int32_t gap = 10;
+ 	const int32_t bottom_h = 52;
+ 	const int32_t section_title_h = 22;
+-
+-	const int32_t quick_h_target = 108;
+-	const int32_t floppy_reduce_h = 40;
+-	const int32_t floppy_min_h = 120;
+-
+ 	const int32_t row_h = 32;
+-	const int32_t floppy_split_gap = 8;
+-	const int32_t floppy_action_w = 100;
+-	const int32_t floppy_action_h = 36;
++	const int32_t insert_btn_h = 30;
+ 
+-	const int32_t qs_top = 4;
+-	const int32_t qs_row_h = 34;
+ 	const int32_t qs_label_w = 96;
+ 	const int32_t qs_gap = 12;
++	const int32_t qs_top = 4;
++	const int32_t qs_row_h = 34;
+ 	const int32_t qs_slider_y_offset = 7;
+-	const int32_t qs_reboot_w = 96;
+-	const int32_t qs_reboot_h = 30;
+-
+-	const int32_t title_x = inset + 2;
+-
+-	const int32_t content_w = sw - inset * 2;
+-	int32_t quick_h = quick_h_target;
+-	int32_t floppy_h = sh - bottom_h - gap - quick_h - inset * 2 - floppy_reduce_h;
+-	if (floppy_h < floppy_min_h) {
+-		floppy_h = floppy_min_h;
+-		quick_h = sh - bottom_h - gap - floppy_h - inset * 2;
+-	}
+-
+-	const int32_t total_h = floppy_h + gap + quick_h;
+-	const int32_t content_y = (sh - bottom_h - total_h) / 2 + 10;
+-
+-	const int32_t floppy_title_y = content_y;
+-	const int32_t floppy_panel_y = content_y + section_title_h;
+-	const int32_t floppy_panel_h = floppy_h - section_title_h;
+ 
+-	const int32_t quick_settings_title_y = content_y + floppy_h + gap;
+-	const int32_t quick_settings_panel_y = quick_settings_title_y + section_title_h;
+-	const int32_t quick_settings_panel_h = quick_h - section_title_h;
++	/* ── Left / right split ─────────────────────────────── */
++	const int32_t left_w = (sw - inset * 2 - gap) / 2;
++	const int32_t right_w = (sw - inset * 2 - gap) / 2;
++	const int32_t left_x = inset;
++	const int32_t right_x = inset + left_w + gap;
++	const int32_t panels_h = sh - bottom_h - inset * 2;
+ 
+-	lv_obj_t *title = lv_label_create(screen);
+-	lv_label_set_text(title, "Pause Menu");
+-	lv_obj_set_style_text_color(title, lv_color_black(), 0);
+-	lv_obj_set_style_text_font(title, &mono_opposans_18, 0);
+-	lv_obj_set_style_transform_zoom(title, 320, 0);
+-	lv_obj_align(title, LV_ALIGN_TOP_MID, 0, inset);
++	/* ── Left: Floppy Manager ───────────────────────────── */
++	const int32_t floppy_title_y = inset;
++	const int32_t floppy_panel_y = floppy_title_y + section_title_h;
++	const int32_t floppy_panel_h = 268;
+ 
+ 	lv_obj_t *floppy_title = lv_label_create(screen);
+ 	lv_label_set_text(floppy_title, "Floppy Manager");
+ 	lv_obj_set_style_text_color(floppy_title, lv_color_black(), 0);
+ 	lv_obj_set_style_text_font(floppy_title, &mono_opposans_18, 0);
+-	lv_obj_set_pos(floppy_title, title_x, floppy_title_y);
++	lv_obj_set_pos(floppy_title, left_x + 2, floppy_title_y);
+ 
+ 	g_settings_ui.drive_status = lv_label_create(screen);
+ 	lv_label_set_text(g_settings_ui.drive_status, "Drive: Empty");
+ 	lv_obj_set_style_text_color(g_settings_ui.drive_status, lv_color_black(), 0);
+ 	lv_obj_set_style_text_font(g_settings_ui.drive_status, &mono_opposans_18, 0);
+ 	lv_obj_set_style_text_align(g_settings_ui.drive_status, LV_TEXT_ALIGN_RIGHT, 0);
+-	lv_obj_set_width(g_settings_ui.drive_status, content_w - 8);
+-	lv_obj_set_pos(g_settings_ui.drive_status, title_x, floppy_title_y);
++	lv_obj_set_width(g_settings_ui.drive_status, left_w - 8);
++	lv_obj_set_pos(g_settings_ui.drive_status, left_x + 2, floppy_title_y);
+ 
+-	lv_obj_t *floppy_panel = create_section_panel(screen, inset, floppy_panel_y, content_w, floppy_panel_h);
++	lv_obj_t *floppy_panel = create_section_panel(screen, left_x, floppy_panel_y,
++		left_w, floppy_panel_h);
+ 	lv_obj_set_style_pad_top(floppy_panel, 4, 0);
+ 	lv_obj_set_style_pad_right(floppy_panel, 4, 0);
+ 	lv_obj_set_style_pad_left(floppy_panel, 4, 0);
+-	lv_obj_set_style_pad_bottom(floppy_panel, 4, 0);
++	lv_obj_set_style_pad_bottom(floppy_panel, 10, 0);
+ 	lv_obj_set_layout(floppy_panel, LV_LAYOUT_FLEX);
+-	lv_obj_set_flex_flow(floppy_panel, LV_FLEX_FLOW_ROW);
+-	lv_obj_set_flex_align(floppy_panel, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+-	lv_obj_set_style_pad_column(floppy_panel, floppy_split_gap, 0);
++	lv_obj_set_flex_flow(floppy_panel, LV_FLEX_FLOW_COLUMN);
++	lv_obj_set_flex_align(floppy_panel, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+ 
+ 	lv_obj_t *list = lv_list_create(floppy_panel);
+-	lv_obj_set_size(list, 10, lv_pct(100));
++	lv_obj_set_size(list, lv_pct(100), LV_SIZE_CONTENT);
+ 	lv_obj_set_flex_grow(list, 1);
+ 	lv_obj_set_style_border_width(list, 1, 0);
+ 	lv_obj_set_style_border_color(list, lv_color_black(), 0);
+ 	lv_obj_set_style_radius(list, 0, 0);
+ 	lv_obj_set_style_bg_opa(list, LV_OPA_TRANSP, 0);
+-	lv_obj_set_style_margin_top(list, 8, 0);
+-	lv_obj_set_style_margin_bottom(list, 8, 0);
++	lv_obj_set_style_margin_top(list, 4, 0);
++	lv_obj_set_style_margin_bottom(list, 4, 0);
+ 	lv_obj_set_style_pad_row(list, 0, 0);
+-	lv_obj_set_style_margin_left(list, 8, 0);
++	lv_obj_set_style_margin_left(list, 4, 0);
+ 	lv_obj_set_style_pad_top(list, 0, 0);
+ 	lv_obj_set_style_pad_bottom(list, 0, 0);
+ 	lv_obj_set_style_pad_left(list, 0, 0);
+@@ -525,23 +501,6 @@ void mach_s3_settings_ui_show(void)
+ 	lv_obj_set_style_bg_opa(list, LV_OPA_COVER, LV_PART_SCROLLBAR);
+ 	lv_obj_set_style_radius(list, 6, LV_PART_SCROLLBAR);
+ 
+-	lv_obj_t *action_col = lv_obj_create(floppy_panel);
+-	lv_obj_set_size(action_col, floppy_action_w, lv_pct(100));
+-	lv_obj_clear_flag(action_col, LV_OBJ_FLAG_SCROLLABLE);
+-	lv_obj_set_style_border_width(action_col, 0, 0);
+-	lv_obj_set_style_bg_opa(action_col, LV_OPA_TRANSP, 0);
+-	lv_obj_set_style_pad_left(action_col, 8, 0);
+-	lv_obj_set_style_pad_right(action_col, 14, 0);
+-	lv_obj_set_style_pad_top(action_col, 8, 0);
+-	lv_obj_set_style_pad_bottom(action_col, 0, 0);
+-
+-	g_settings_ui.insert_action_btn = create_action_btn(action_col, "Insert");
+-	lv_obj_set_width(g_settings_ui.insert_action_btn, lv_pct(100));
+-	lv_obj_set_height(g_settings_ui.insert_action_btn, floppy_action_h);
+-	lv_obj_align(g_settings_ui.insert_action_btn, LV_ALIGN_TOP_MID, 0, 0);
+-	lv_obj_move_foreground(g_settings_ui.insert_action_btn);
+-	lv_obj_add_event_cb(g_settings_ui.insert_action_btn, on_insert_clicked, LV_EVENT_CLICKED, NULL);
+-
+ 	for (uint16_t i = 0; i < g_settings_ui.count; i++) {
+ 		lv_obj_t *row = lv_list_add_button(list, NULL, "");
+ 		lv_obj_clear_flag(row, LV_OBJ_FLAG_CHECKABLE);
+@@ -595,26 +554,36 @@ void mach_s3_settings_ui_show(void)
+ 		g_settings_ui.status[i] = status;
+ 	}
+ 
+-	lv_obj_t *quick_settings_title = lv_label_create(screen);
+-	lv_label_set_text(quick_settings_title, "Quick Settings");
+-	lv_obj_set_style_text_color(quick_settings_title, lv_color_black(), 0);
+-	lv_obj_set_style_text_font(quick_settings_title, &mono_opposans_18, 0);
+-	lv_obj_set_pos(quick_settings_title, title_x, quick_settings_title_y);
+-
+-	lv_obj_t *quick_settings_panel = create_section_panel(screen, inset, quick_settings_panel_y, content_w, quick_settings_panel_h);
++	/* Insert button — inside floppy panel */
++	const int32_t insert_btn_w = 120;
++	g_settings_ui.insert_action_btn = create_action_btn(floppy_panel, "Insert");
++	lv_obj_set_size(g_settings_ui.insert_action_btn, insert_btn_w, insert_btn_h);
++	lv_obj_set_style_margin_top(g_settings_ui.insert_action_btn, 4, 0);
++	lv_obj_set_style_margin_bottom(g_settings_ui.insert_action_btn, 4, 0);
++	lv_obj_add_event_cb(g_settings_ui.insert_action_btn, on_insert_clicked,
++		LV_EVENT_CLICKED, NULL);
++
++	/* ── Left: Quick Settings ──────────────────────────── */
++	const int32_t quick_title_y = floppy_panel_y + floppy_panel_h + gap;
++	const int32_t quick_panel_y = quick_title_y + section_title_h;
++	const int32_t quick_panel_h = 86;
++
++	lv_obj_t *quick_title = lv_label_create(screen);
++	lv_label_set_text(quick_title, "Quick Settings");
++	lv_obj_set_style_text_color(quick_title, lv_color_black(), 0);
++	lv_obj_set_style_text_font(quick_title, &mono_opposans_18, 0);
++	lv_obj_set_pos(quick_title, left_x + 2, quick_title_y);
++
++	lv_obj_t *quick_panel = create_section_panel(screen, left_x, quick_panel_y,
++		left_w, quick_panel_h);
+ 	const int32_t qs_control_x = qs_label_w + qs_gap;
+-	int32_t qs_control_w = lv_obj_get_content_width(quick_settings_panel) - qs_control_x - qs_reboot_w - qs_gap - 8;
+-	if (qs_control_w < 180) {
+-		qs_control_w = 180;
++	int32_t qs_control_w = lv_obj_get_content_width(quick_panel) - qs_control_x - 16;
++	if (qs_control_w < 160) {
++		qs_control_w = 160;
+ 	}
+-	const int32_t qs_reboot_x = qs_control_x + qs_control_w + qs_gap;
+ 
+-	lv_obj_t *reboot_btn = create_action_btn(quick_settings_panel, "Reboot");
+-	lv_obj_set_size(reboot_btn, qs_reboot_w, qs_reboot_h);
+-	lv_obj_set_pos(reboot_btn, qs_reboot_x, 0);
+-	lv_obj_add_event_cb(reboot_btn, on_reboot_clicked, LV_EVENT_CLICKED, NULL);
+-
+-	lv_obj_t *bl_label = lv_label_create(quick_settings_panel);
++	/* Backlight */
++	lv_obj_t *bl_label = lv_label_create(quick_panel);
+ 	lv_label_set_text(bl_label, "Backlight");
+ 	lv_obj_set_style_text_color(bl_label, lv_color_black(), 0);
+ 	lv_obj_set_style_text_font(bl_label, &mono_opposans_18, 0);
+@@ -622,7 +591,7 @@ void mach_s3_settings_ui_show(void)
+ 	lv_obj_set_style_text_align(bl_label, LV_TEXT_ALIGN_LEFT, 0);
+ 	lv_obj_set_pos(bl_label, 0, qs_top);
+ 
+-	lv_obj_t *bl_slider = lv_slider_create(quick_settings_panel);
++	lv_obj_t *bl_slider = lv_slider_create(quick_panel);
+ 	lv_obj_set_width(bl_slider, qs_control_w);
+ 	lv_obj_set_pos(bl_slider, qs_control_x, qs_top + qs_slider_y_offset);
+ 	style_quick_slider(bl_slider);
+@@ -630,18 +599,16 @@ void mach_s3_settings_ui_show(void)
+ 	int bl_value_i = (int)SETTINGS_UI_BACKLIGHT_DEFAULT;
+ 	if (g_settings_ui.backend->get_backlight != NULL) {
+ 		bl_value_i = (int)g_settings_ui.backend->get_backlight(g_settings_ui.backend);
+-		if (bl_value_i < 0) {
+-			bl_value_i = 0;
+-		} else if (bl_value_i > 100) {
+-			bl_value_i = 100;
+-		}
++		if (bl_value_i < 0) bl_value_i = 0;
++		else if (bl_value_i > 100) bl_value_i = 100;
+ 	}
+ 	lv_slider_set_value(bl_slider, bl_value_i, LV_ANIM_OFF);
+ 	lv_obj_add_event_cb(bl_slider, on_backlight_slider_value_changed, LV_EVENT_VALUE_CHANGED, NULL);
+ 	lv_obj_add_event_cb(bl_slider, on_backlight_slider_released, LV_EVENT_RELEASED, NULL);
+ 	lv_obj_add_event_cb(bl_slider, on_backlight_slider_released, LV_EVENT_PRESS_LOST, NULL);
+ 
+-	lv_obj_t *vol_label = lv_label_create(quick_settings_panel);
++	/* Volume */
++	lv_obj_t *vol_label = lv_label_create(quick_panel);
+ 	lv_label_set_text(vol_label, "Volume");
+ 	lv_obj_set_style_text_color(vol_label, lv_color_black(), 0);
+ 	lv_obj_set_style_text_font(vol_label, &mono_opposans_18, 0);
+@@ -649,7 +616,7 @@ void mach_s3_settings_ui_show(void)
+ 	lv_obj_set_style_text_align(vol_label, LV_TEXT_ALIGN_LEFT, 0);
+ 	lv_obj_set_pos(vol_label, 0, qs_top + qs_row_h);
+ 
+-	lv_obj_t *vol_slider = lv_slider_create(quick_settings_panel);
++	lv_obj_t *vol_slider = lv_slider_create(quick_panel);
+ 	lv_obj_set_width(vol_slider, qs_control_w);
+ 	lv_obj_set_pos(vol_slider, qs_control_x, qs_top + qs_row_h + qs_slider_y_offset);
+ 	style_quick_slider(vol_slider);
+@@ -657,21 +624,33 @@ void mach_s3_settings_ui_show(void)
+ 	int vol_value_i = (int)SETTINGS_UI_VOLUME_DEFAULT;
+ 	if (g_settings_ui.backend->get_volume != NULL) {
+ 		vol_value_i = (int)g_settings_ui.backend->get_volume(g_settings_ui.backend);
+-		if (vol_value_i < 0) {
+-			vol_value_i = 0;
+-		} else if (vol_value_i > (int)SETTINGS_UI_VOLUME_MAX) {
+-			vol_value_i = (int)SETTINGS_UI_VOLUME_MAX;
+-		}
++		if (vol_value_i < 0) vol_value_i = 0;
++		else if (vol_value_i > (int)SETTINGS_UI_VOLUME_MAX) vol_value_i = (int)SETTINGS_UI_VOLUME_MAX;
+ 	}
+ 	lv_slider_set_value(vol_slider, vol_value_i, LV_ANIM_OFF);
+ 	lv_obj_add_event_cb(vol_slider, on_volume_slider_value_changed, LV_EVENT_VALUE_CHANGED, NULL);
+ 	lv_obj_add_event_cb(vol_slider, on_volume_slider_released, LV_EVENT_RELEASED, NULL);
+ 	lv_obj_add_event_cb(vol_slider, on_volume_slider_released, LV_EVENT_PRESS_LOST, NULL);
+ 
+-	lv_obj_t *back_btn = create_action_btn(screen, "Resume");
+-	lv_obj_set_size(back_btn, 140, 38);
+-	lv_obj_align(back_btn, LV_ALIGN_BOTTOM_MID, 0, -10);
+-	lv_obj_add_event_cb(back_btn, on_back_clicked, LV_EVENT_CLICKED, NULL);
++	/* ── Right: Bluetooth ──────────────────────────────── */
++	ble_panel_create(screen, right_x, inset, right_w, panels_h);
++
++	/* ── Bottom: Reboot + Resume ──────────────────────── */
++	const int32_t btn_w = 140;
++	const int32_t btn_h = 38;
++	const int32_t btn_y = sh - bottom_h + (bottom_h - btn_h) / 2;
++	const int32_t reboot_x = (sw - btn_w * 2 - gap) / 2;
++	const int32_t resume_x = reboot_x + btn_w + gap;
++
++	lv_obj_t *reboot_btn = create_action_btn(screen, "Reboot");
++	lv_obj_set_size(reboot_btn, btn_w, btn_h);
++	lv_obj_set_pos(reboot_btn, reboot_x, btn_y);
++	lv_obj_add_event_cb(reboot_btn, on_reboot_clicked, LV_EVENT_CLICKED, NULL);
++
++	lv_obj_t *resume_btn = create_action_btn(screen, "Resume");
++	lv_obj_set_size(resume_btn, btn_w, btn_h);
++	lv_obj_set_pos(resume_btn, resume_x, btn_y);
++	lv_obj_add_event_cb(resume_btn, on_back_clicked, LV_EVENT_CLICKED, NULL);
+ 
+ 	settings_ui_refresh_all_rows();
+ }

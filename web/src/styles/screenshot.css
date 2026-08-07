@@ -1,0 +1,47 @@
+/* 截屏弹窗：遮罩 / 弹窗 / Cropper 手柄（CleanShot X 风格）/ 比例胶囊 / 旋转拨盘 / 下载 */
+
+.shotpop { position:fixed; inset:0; background:rgba(0,0,0,.45); z-index:99; display:flex; align-items:center; justify-content:center; }
+.shotpop[hidden] { display:none; }
+.shotbox { width:min(92vw, 640px); height:92vh; height:92dvh; background:#e6e2d8; border:2px solid #404040; border-radius:8px; overflow:hidden; box-shadow:0 4px 16px rgba(0,0,0,.4); display:flex; flex-direction:column; }
+.shotview { position:relative; background:#e6e2d8; margin:0; padding:0; border:none; display:flex; align-items:center; justify-content:center; flex:1; min-height:0; overflow:hidden; touch-action:none; }
+#shotImg { display:block; max-width:100%; max-height:100%; }
+
+.wallctrl { display:none; flex-direction:column; gap:6px; align-items:center; padding:8px 10px 8px; }
+.ratio-row { display:flex; flex-wrap:wrap; justify-content:center; gap:4px; }
+.ratio-btn { height:22px; padding:0 10px; background:#e6e2d8; border:1px solid #a8a296; border-radius:11px; color:#333; font-size:12px; cursor:pointer; }
+.ratio-btn.on { background:#404040; color:#fff; border-color:#404040; }
+
+.walldial { position:relative; width:280px; height:64px; overflow:hidden; touch-action:none; cursor:pointer; user-select:none; -webkit-user-select:none; }
+.wd-band { position:absolute; left:-200px; top:calc(50% + 10px); height:20px; margin-top:-10px; will-change:transform; }
+.wd-tick { position:absolute; top:50%; width:2px; height:12px; margin-top:-6px; background:#a8a296; }
+.wd-indicator { position:absolute; left:50%; top:calc(50% + 10px); width:2px; height:18px; margin:-9px 0 0 -1px; background:#404040; }
+.wd-label { position:absolute; top:0; left:50%; transform:translateX(-50%); height:22px; line-height:20px; padding:0 14px; background:#fff; border:1px solid #d8d2c4; border-radius:11px; font-size:13px; color:#333; }
+.wd-reset { position:absolute; top:0; left:50%; transform:translateX(-50%); height:22px; padding:0 14px; background:#e6e2d8; border:1px solid #a8a296; border-radius:11px; color:#333; font-size:13px; cursor:pointer; display:none; }
+.wd-reset:active { background:#d8d2c4; }
+
+.shotfoot { display:flex; gap:8px; padding:0 10px 10px; }
+.shotdl { flex:1; height:36px; background:#d8d8d8; border:1.5px solid #404040; border-radius:5px; color:#000; font-size:13px; cursor:pointer; box-shadow:0 1px 0 rgba(0,0,0,.25); }
+.shotdl:active { background:#c2c2c2; }
+.shotclose { height:36px; padding:0 14px; background:#5f5f5f; border:none; border-radius:5px; color:#fff; font-size:13px; cursor:pointer; }
+
+/* Cropper 手柄：边线长条可拖区 + L 型角点（CleanShot X 风格，点击区域大） */
+.cropper-line { background-color:transparent !important; }
+.cropper-line.line-e, .cropper-line.line-w { width:14px !important; }
+.cropper-line.line-n, .cropper-line.line-s { height:14px !important; }
+.cropper-point { background:transparent !important; border:none; opacity:1 !important; width:20px !important; height:20px !important; filter:drop-shadow(0 0 2px rgba(0,0,0,.7)) drop-shadow(0 0 5px rgba(0,0,0,.35)); }
+.cropper-point::before, .cropper-point::after { content:''; position:absolute; background:#fff; }
+.cropper-point::before { width:16px; height:4px; }
+.cropper-point::after { width:4px; height:16px; }
+/* 四角 L：拐角对齐裁剪框角 */
+.cropper-point.point-nw { left:0 !important; top:0 !important; } .cropper-point.point-nw::before { top:0; left:0; } .cropper-point.point-nw::after { top:0; left:0; }
+.cropper-point.point-ne { right:0 !important; top:0 !important; } .cropper-point.point-ne::before { top:0; right:0; } .cropper-point.point-ne::after { top:0; right:0; }
+.cropper-point.point-sw { left:0 !important; bottom:0 !important; } .cropper-point.point-sw::before { bottom:0; left:0; } .cropper-point.point-sw::after { bottom:0; left:0; }
+.cropper-point.point-se { right:0 !important; bottom:0 !important; } .cropper-point.point-se::before { width:16px !important; height:4px !important; bottom:0 !important; right:0 !important; opacity:1 !important; background-color:#fff !important; } .cropper-point.point-se::after { bottom:0; right:0; }
+/* 边中点：细长条沿边（跨边线，一半内一半外） */
+.cropper-point.point-n::before, .cropper-point.point-s::before { width:22px; height:4px; top:50%; left:50%; transform:translate(-50%,-50%); }
+.cropper-point.point-e::before, .cropper-point.point-w::before { width:4px; height:22px; top:50%; left:50%; transform:translate(-50%,-50%); }
+.cropper-point.point-n::after, .cropper-point.point-s::after, .cropper-point.point-e::after, .cropper-point.point-w::after { display:none; }
+.cropper-point.point-n { top:-10px !important; margin-left:-10px !important; }
+.cropper-point.point-s { bottom:-10px !important; margin-left:-10px !important; }
+.cropper-point.point-e { right:-10px !important; margin-top:-10px !important; }
+.cropper-point.point-w { left:-10px !important; margin-top:-10px !important; }

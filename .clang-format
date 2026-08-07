@@ -1,0 +1,40 @@
+BasedOnStyle: LLVM
+
+IndentWidth: 8
+TabWidth: 8
+UseTab: ForIndentation
+ContinuationIndentWidth: 8
+
+BreakBeforeBraces: Linux
+SpaceBeforeParens: Custom
+SpaceBeforeParensOptions:
+  AfterControlStatements: true
+  AfterForeachMacros: false
+  AfterIfMacros: true
+  AfterFunctionDeclarationName: false
+  AfterFunctionDefinitionName: false
+  AfterOverloadedOperator: false
+SpacesInParentheses: false
+SpaceAfterCStyleCast: false
+AllowShortFunctionsOnASingleLine: None
+AllowShortBlocksOnASingleLine: Never
+
+PointerAlignment: Right
+DerivePointerAlignment: false
+
+AlignAfterOpenBracket: Align
+BinPackArguments: false
+BinPackParameters: false
+
+IndentCaseLabels: false
+IndentPPDirectives: None
+
+SortIncludes: false
+IncludeBlocks: Preserve
+ForEachMacros:
+  - FOR_EACH_DEVICE
+  - list_for_each
+  - list_for_each_entry
+
+ColumnLimit: 160
+ReflowComments: false

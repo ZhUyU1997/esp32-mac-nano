@@ -1,0 +1,26 @@
+{
+  "fb-sdl": {
+    "name": "lcd",
+    "width": 640,
+    "height": 480,
+    "scale": 1,
+    "brightness": 100,
+    "borderless": true
+  },
+  "snd-sdl": {
+    "name": "snd",
+    "sample_rate": 22200,
+    "channels": 1,
+    "samples": 1024
+  },
+  "block-file:0": { "name": "hd", "path": "macintosh/hd.img", "overlay": true },
+  "block-file:1": { "name": "fd", "path": "macintosh/fd.img", "overlay": true },
+  "block-file:2": { "name": "hd0-img", "path": "macintosh/hd0.img", "overlay": true },
+  "block-file:3": { "name": "hd1-img", "path": "macintosh/hd1.img", "overlay": true },
+  "block-file:4": { "name": "hd2-img", "path": "macintosh/hd2.img", "overlay": true },
+  "block-file:5": { "name": "hd3-img", "path": "macintosh/hd3.img", "overlay": true },
+  "block-file:6": { "name": "hd4-img", "path": "macintosh/hd4.img", "overlay": true },
+  "block-file:7": { "name": "hd5-img", "path": "macintosh/hd5.img", "overlay": true },
+  "block-file:8": { "name": "hd6-img", "path": "macintosh/hd6.img", "overlay": true },
+  "block-file:9": { "name": "hd7-img", "path": "macintosh/hd7.img", "overlay": true }
+}

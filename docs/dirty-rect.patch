@@ -1,0 +1,305 @@
+diff --git a/main/arch/esp32/mach-s3/main.c b/main/arch/esp32/mach-s3/main.c
+index 16dda8f..6c1fda5 100644
+--- a/main/arch/esp32/mach-s3/main.c
++++ b/main/arch/esp32/mach-s3/main.c
+@@ -85,6 +85,29 @@ static void FAST_FUNC_ATTR mach_s3_blit_mac_cb(framebuffer_t *lcd, void *user_ct
+ 	assert(s->mac != NULL);
+ 
+ 	int is_alt = (s->latest_frame == s->mac->vbuf2);
++#ifdef ENABLE_DIRTY_RECT
++	if (is_alt) {
++		VBUF_MARK_DIRTY_ALL(s->mac);
++	}
++	if (VBUF_IS_DIRTY(s->mac)) {
++		int m_x1 = s->mac->dirty_x1, m_y1 = s->mac->dirty_y1;
++		int m_x2 = s->mac->dirty_x2, m_y2 = s->mac->dirty_y2;
++		VBUF_CLEAR_DIRTY(s->mac);
++		void *fb = framebuffer_get_framebuffer(lcd);
++		assert(fb != NULL);
++		if (m_x1 <= 0 && m_y1 <= 0 && m_x2 >= DISP_WIDTH && m_y2 >= DISP_HEIGHT) {
++			blit_mac_mono_to_lcd_rgba(fb, s->latest_frame, lcd->height, lcd->width);
++		} else {
++			int lcd_x1 = m_y1;
++			int lcd_y1 = lcd->height - m_x2;
++			int lcd_x2 = m_y2;
++			int lcd_y2 = lcd->height - m_x1;
++			blit_mac_mono_to_lcd_rgba_rect(fb, s->latest_frame, lcd->height, lcd->width, lcd_x1, lcd_y1, lcd_x2, lcd_y2);
++		}
++	} else {
++		s->blit_skipped++;
++	}
++#else
+ 	if (is_alt || VBUF_IS_DIRTY(s->mac)) {
+ 		VBUF_CLEAR_DIRTY(s->mac);
+ 		void *fb = framebuffer_get_framebuffer(lcd);
+@@ -93,6 +116,7 @@ static void FAST_FUNC_ATTR mach_s3_blit_mac_cb(framebuffer_t *lcd, void *user_ct
+ 	} else {
+ 		s->blit_skipped++;
+ 	}
++#endif
+ 	s->fps = fps_tick();
+ }
+ 
+diff --git a/main/core/macplus/core/clock.c b/main/core/macplus/core/clock.c
+index 1684276..db7458c 100644
+--- a/main/core/macplus/core/clock.c
++++ b/main/core/macplus/core/clock.c
+@@ -183,23 +183,23 @@ void mac_clock_run_frame(macplus_t *s, mac_clock_sched_t *sched, unsigned cycles
+ 	/* Per-frame throttling: target 1/60 s = ~16667 µs per frame.
+ 	 * Skip throttling while sound is playing so the I2S ring buffer
+ 	 * stays primed and avoids underrun pops on silence transitions. */
+-	if (s->sound.silence_cnt >= MAC_SOUND_SILENCE) {
+-		unsigned sf = s->speed_factor;
+-		int64_t frame_target_us;
+-
+-		if (sf == 0) {
+-			sf = 1;
+-		}
+-		frame_target_us = 1000000LL / (60LL * (int64_t)sf);
+-		if (sched->frame_group_start_us != 0) {
+-			int64_t elapsed = (int64_t)(host_monotonic_us() - sched->frame_group_start_us);
+-			int64_t to_sleep = frame_target_us - elapsed;
+-			if (to_sleep > 0) {
+-				usleep((useconds_t)to_sleep);
+-			}
+-		}
+-	}
+-	sched->frame_group_start_us = host_monotonic_us();
++	// if (s->sound.silence_cnt >= MAC_SOUND_SILENCE) {
++	// 	unsigned sf = s->speed_factor;
++	// 	int64_t frame_target_us;
++
++	// 	if (sf == 0) {
++	// 		sf = 1;
++	// 	}
++	// 	frame_target_us = 1000000LL / (60LL * (int64_t)sf);
++	// 	if (sched->frame_group_start_us != 0) {
++	// 		int64_t elapsed = (int64_t)(host_monotonic_us() - sched->frame_group_start_us);
++	// 		int64_t to_sleep = frame_target_us - elapsed;
++	// 		if (to_sleep > 0) {
++	// 			usleep((useconds_t)to_sleep);
++	// 		}
++	// 	}
++	// }
++	// sched->frame_group_start_us = host_monotonic_us();
+ }
+ 
+ int mac_clock_cpu_hz(const macplus_t *s)
+diff --git a/main/core/macplus/core/macplus.c b/main/core/macplus/core/macplus.c
+index db95975..da4dcd9 100644
+--- a/main/core/macplus/core/macplus.c
++++ b/main/core/macplus/core/macplus.c
+@@ -466,7 +466,11 @@ static int mac_erase_scrn_try_hook(void)
+ 		*MMAP_RAM_PTR(mm_ent, p) = 0xffu;
+ 	}
+ 	MAC_MMIO_HOOK_LOG("mac_erase_scrn_try_hook: ok\n");
++#ifdef ENABLE_DIRTY_RECT
++	VBUF_MARK_DIRTY_ALL(sim);
++#else
+ 	VBUF_MARK_DIRTY(sim);
++#endif
+ 	return 0;
+ }
+ 
+@@ -625,9 +629,20 @@ void FAST_FUNC_ATTR m68k_write_memory_8(unsigned int address, unsigned int value
+ 		uint8_t *p;
+ 		p = (uint8_t *)MMAP_RAM_PTR(mm_ent, address);
+ 		*p = value;
++#ifdef ENABLE_DIRTY_RECT
++		{
++			unsigned off = address - MACPLUS_SCREENBUF;
++			if (off < SCREEN_SIZE) {
++				int y = (int)(off / (DISP_WIDTH / 8));
++				int x = (int)((off % (DISP_WIDTH / 8)) * 8);
++				VBUF_MARK_DIRTY_RECT(sim, x, y, x + 8, y + 1);
++			}
++		}
++#else
+ 		if (address >= MACPLUS_SCREENBUF &&
+ 		    address < MACPLUS_SCREENBUF + SCREEN_SIZE)
+ 			VBUF_MARK_DIRTY(sim);
++#endif
+ 	} else {
+ 		mm_ent->cb(address, value, 1);
+ 	}
+@@ -642,9 +657,24 @@ void FAST_FUNC_ATTR m68k_write_memory_16(unsigned int address, unsigned int valu
+ 		uint16_t *p;
+ 		p = (uint16_t *)MMAP_RAM_PTR(mm_ent, address);
+ 		*p = __bswap_16(value);
++#ifdef ENABLE_DIRTY_RECT
++		{
++			int off = (int)(address - MACPLUS_SCREENBUF);
++			int b0 = off, b1 = off + 1;
++			if (b0 < 0) b0 = 0;
++			if (b1 > (int)SCREEN_SIZE - 1) b1 = (int)SCREEN_SIZE - 1;
++			if (b0 <= b1) {
++				int y0 = b0 / (DISP_WIDTH / 8), y1 = b1 / (DISP_WIDTH / 8);
++				int x0 = (b0 % (DISP_WIDTH / 8)) * 8;
++				int x1 = (b1 % (DISP_WIDTH / 8)) * 8 + 8;
++				VBUF_MARK_DIRTY_RECT(sim, x0, y0, x1, y1 + 1);
++			}
++		}
++#else
+ 		if (address > MACPLUS_SCREENBUF - 2 &&
+ 		    address < MACPLUS_SCREENBUF + SCREEN_SIZE)
+ 			VBUF_MARK_DIRTY(sim);
++#endif
+ 	} else {
+ 		mm_ent->cb(address, (value >> 8) & 0xff, 1);
+ 		mm_ent->cb(address + 1, (value >> 0) & 0xff, 1);
+@@ -660,9 +690,24 @@ void FAST_FUNC_ATTR m68k_write_memory_32(unsigned int address, unsigned int valu
+ 			uint16_t *p = (uint16_t *)MMAP_RAM_PTR(mm_ent, address);
+ 			*p++ = __bswap_16(value >> 16);
+ 			*p = __bswap_16(value);
++#ifdef ENABLE_DIRTY_RECT
++			{
++				int off = (int)(address - MACPLUS_SCREENBUF);
++				int b0 = off, b1 = off + 3;
++				if (b0 < 0) b0 = 0;
++				if (b1 > (int)SCREEN_SIZE - 1) b1 = (int)SCREEN_SIZE - 1;
++				if (b0 <= b1) {
++					int y0 = b0 / (DISP_WIDTH / 8), y1 = b1 / (DISP_WIDTH / 8);
++					int x0 = (b0 % (DISP_WIDTH / 8)) * 8;
++					int x1 = (b1 % (DISP_WIDTH / 8)) * 8 + 8;
++					VBUF_MARK_DIRTY_RECT(sim, x0, y0, x1, y1 + 1);
++				}
++			}
++#else
+ 			if (address > MACPLUS_SCREENBUF - 4 &&
+ 			    address < MACPLUS_SCREENBUF + SCREEN_SIZE)
+ 				VBUF_MARK_DIRTY(sim);
++#endif
+ 		} else {
+ 			mm_ent->cb(address, (value >> 24) & 0xff, 1);
+ 			mm_ent->cb(address + 1, (value >> 16) & 0xff, 1);
+diff --git a/main/core/macplus/include/macplus.h b/main/core/macplus/include/macplus.h
+index 6b043d4..10d931a 100644
+--- a/main/core/macplus/include/macplus.h
++++ b/main/core/macplus/include/macplus.h
+@@ -1,6 +1,10 @@
+ #ifndef MACPLUS_H
+ #define MACPLUS_H
+ 
++/* Comment out to disable dirty-rectangle partial blit and fall back to
++ * full-frame blit (for A/B performance comparison). */
++#define ENABLE_DIRTY_RECT
++
+ #include <stddef.h>
+ #include <stdint.h>
+ 
+@@ -76,7 +80,11 @@ typedef struct macplus {
+ 
+ 	uint8_t *vbuf1;
+ 	uint8_t *vbuf2;
++#ifdef ENABLE_DIRTY_RECT
++	int16_t dirty_x1, dirty_y1, dirty_x2, dirty_y2;
++#else
+ 	uint8_t vbuf_dirty;
++#endif
+ 	uint8_t *sbuf1;
+ 	uint8_t *sbuf2;
+ 	void (*frame_callback)(uint8_t *framebuffer, void *ctx);
+@@ -97,10 +105,48 @@ typedef struct macplus {
+ 	uint8_t shm_region[512];
+ } macplus_t;
+ 
+-// atomic variants (zero-overhead on Xtensa, use if cross-core visibility issues suspected):
+-#define VBUF_MARK_DIRTY(s)  __atomic_store_n(&(s)->vbuf_dirty, 1, __ATOMIC_RELAXED)
+-#define VBUF_CLEAR_DIRTY(s) __atomic_store_n(&(s)->vbuf_dirty, 0, __ATOMIC_RELAXED)
+-#define VBUF_IS_DIRTY(s)    __atomic_load_n(&(s)->vbuf_dirty, __ATOMIC_RELAXED)
++#ifdef ENABLE_DIRTY_RECT
++/* Dirty-rectangle tracking.
++ * dirty_x1 > dirty_x2 means “no dirty region” (initial state after clear).
++ * Producer (core 1, 68k emu) expands the rectangle on screen writes.
++ * Consumer (core 0, blit worker) reads & clears under VSYNC. */
++#define VBUF_INIT_DIRTY(s) do { \
++	(s)->dirty_x1 = 1; (s)->dirty_y1 = 0; \
++	(s)->dirty_x2 = 0; (s)->dirty_y2 = 0; \
++} while(0)
++
++#define VBUF_IS_DIRTY(s) ((s)->dirty_x1 < (s)->dirty_x2)
++
++#define VBUF_MARK_DIRTY_ALL(s) do { \
++	(s)->dirty_x1 = 0; (s)->dirty_y1 = 0; \
++	(s)->dirty_x2 = (int16_t)DISP_WIDTH; \
++	(s)->dirty_y2 = (int16_t)DISP_HEIGHT; \
++} while(0)
++
++#define VBUF_MARK_DIRTY_RECT(s, x1, y1, x2, y2) do { \
++	int16_t _rx1 = (int16_t)(x1), _ry1 = (int16_t)(y1); \
++	int16_t _rx2 = (int16_t)(x2), _ry2 = (int16_t)(y2); \
++	if (_rx1 < 0) _rx1 = 0; \
++	if (_ry1 < 0) _ry1 = 0; \
++	if (_rx2 > (int16_t)DISP_WIDTH)  _rx2 = (int16_t)DISP_WIDTH; \
++	if (_ry2 > (int16_t)DISP_HEIGHT) _ry2 = (int16_t)DISP_HEIGHT; \
++	if (VBUF_IS_DIRTY(s)) { \
++		if (_rx1 < (s)->dirty_x1) (s)->dirty_x1 = _rx1; \
++		if (_ry1 < (s)->dirty_y1) (s)->dirty_y1 = _ry1; \
++		if (_rx2 > (s)->dirty_x2) (s)->dirty_x2 = _rx2; \
++		if (_ry2 > (s)->dirty_y2) (s)->dirty_y2 = _ry2; \
++	} else { \
++		(s)->dirty_x1 = _rx1; (s)->dirty_y1 = _ry1; \
++		(s)->dirty_x2 = _rx2; (s)->dirty_y2 = _ry2; \
++	} \
++} while(0)
++
++#define VBUF_CLEAR_DIRTY(s) VBUF_INIT_DIRTY(s)
++#else
++#define VBUF_MARK_DIRTY(s)    __atomic_store_n(&(s)->vbuf_dirty, 1, __ATOMIC_RELAXED)
++#define VBUF_CLEAR_DIRTY(s)   __atomic_store_n(&(s)->vbuf_dirty, 0, __ATOMIC_RELAXED)
++#define VBUF_IS_DIRTY(s)      __atomic_load_n(&(s)->vbuf_dirty, __ATOMIC_RELAXED)
++#endif
+ 
+ macplus_t *macplus_instance(void);
+ 
+diff --git a/main/driver/video/frame_blit.h b/main/driver/video/frame_blit.h
+index 1fcaf23..cf2105c 100644
+--- a/main/driver/video/frame_blit.h
++++ b/main/driver/video/frame_blit.h
+@@ -85,4 +85,46 @@ static inline void FAST_FUNC_ATTR blit_mac_mono_to_lcd_rgba(void *restrict lcd_f
+ 	}
+ }
+ 
++/* Partial blit: only the LCD sub-rectangle [lcd_x1,lcd_x2) × [lcd_y1,lcd_y2).
++ * Coordinates are 4-pixel aligned by the function. */
++static inline void FAST_FUNC_ATTR blit_mac_mono_to_lcd_rgba_rect(
++	void *restrict lcd_fb, const uint8_t *restrict mac_fb,
++	int lcd_h, int lcd_w,
++	int lcd_x1, int lcd_y1, int lcd_x2, int lcd_y2)
++{
++	int ax1 = lcd_x1 & ~3;
++	int ax2 = (lcd_x2 + 3) & ~3;
++	int stride_u32 = lcd_w / 4;
++
++	if (ax2 > lcd_w) ax2 = lcd_w;
++	if (ax1 >= ax2) return;
++
++	for (int dst_y = lcd_y1; dst_y < lcd_y2; dst_y++) {
++		const int src_x = (lcd_h - 1 - dst_y);
++		const uint8_t bit_idx = (uint8_t)((7 - src_x) & 7);
++		const int src_byte_idx = src_x >> 3;
++
++		uint32_t *dst_u32 = (uint32_t *)lcd_fb + (size_t)dst_y * (size_t)stride_u32 + (size_t)(ax1 / 4);
++		const uint8_t *src_ptr = mac_fb + src_byte_idx + (size_t)(ax1 / 4) * 320u;
++
++		for (int dst_x = ax1; dst_x < ax2; dst_x += 4, src_ptr += 320) {
++			const uint32_t b0 = ((uint32_t)(src_ptr[0] >> bit_idx) & 1u);
++			const uint32_t b1 = ((uint32_t)(src_ptr[80] >> bit_idx) & 1u);
++			const uint32_t b2 = ((uint32_t)(src_ptr[160] >> bit_idx) & 1u);
++			const uint32_t b3 = ((uint32_t)(src_ptr[240] >> bit_idx) & 1u);
++
++			const uint32_t m0 = (uint32_t)0 - b0;
++			const uint32_t m1 = (uint32_t)0 - b1;
++			const uint32_t m2 = (uint32_t)0 - b2;
++			const uint32_t m3 = (uint32_t)0 - b3;
++
++			const uint32_t o0 = (~m0) & 0x000000FFu;
++			const uint32_t o1 = ((~m1) & 0x000000FFu) << 8;
++			const uint32_t o2 = ((~m2) & 0x000000FFu) << 16;
++			const uint32_t o3 = ((~m3) & 0x000000FFu) << 24;
++			*dst_u32++ = o0 | o1 | o2 | o3;
++		}
++	}
++}
++
+ #endif

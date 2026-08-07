@@ -1,0 +1,3 @@
+*.o
+*.elf
+pcex_illegal.rom

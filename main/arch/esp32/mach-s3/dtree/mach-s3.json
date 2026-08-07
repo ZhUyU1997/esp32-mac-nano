@@ -1,0 +1,76 @@
+{
+  "gpio-s3": { "name": "gpio", "base": 0 },
+  "key-gpio-polled": {
+    "name": "keys",
+    "poll-interval-ms": 20,
+    "keys": [
+      { "gpio": 7, "active-low": true, "key-code": 259 },
+      { "gpio": 15, "active-low": true, "key-code": 267 },
+      { "gpio": 16, "active-low": true, "key-code": 260 }
+    ]
+  },
+  "snd-i2s": {
+    "name": "snd",
+    "bclk_gpio": 5,
+    "ws_gpio": 6,
+    "dout_gpio": 4,
+    "din_gpio": -1,
+    "mclk_inv": false,
+    "bclk_inv": false,
+    "ws_inv": false,
+    "ringbuf_bytes": 4096
+  },
+  "fb-st7701": {
+    "name": "lcd",
+    "brightness": 50,
+
+    "spi_cs_gpio": 38,
+    "spi_scl_gpio": 47,
+    "spi_sda_gpio": 48,
+
+    "rgb_de_gpio": -1,
+    "rgb_pclk_gpio": 11,
+    "rgb_vsync_gpio": 10,
+    "rgb_hsync_gpio": 42,
+    "rgb_disp_gpio": 9,
+
+    "rgb_data0_gpio": 41,
+    "rgb_data1_gpio": 12,
+    "rgb_data2_gpio": 40,
+    "rgb_data3_gpio": 13,
+    "rgb_data4_gpio": 14,
+    "rgb_data5_gpio": 39,
+
+    "rst_gpio": 21,
+
+    "h_res": 480,
+    "v_res": 640,
+    "fb_bits_per_pixel": 8,
+    "panel_bits_per_pixel": 16,
+
+    "pclk_hz": 23000000,
+    "bounce_lines": 16,
+
+    "hsync_pulse_width": 2,
+    "hsync_back_porch": 51,
+    "hsync_front_porch": 32,
+    "vsync_pulse_width": 2,
+    "vsync_back_porch": 27,
+    "vsync_front_porch": 12,
+
+    "hsync_idle_low": false,
+    "vsync_idle_low": false,
+    "pclk_active_neg": true,
+    "de_idle_high": false
+  },
+  "block-file:0": { "name": "hd-img", "path": "/sdcard/hd.img" },
+  "block-partition": { "name": "hd-part", "type": 64, "subtype": 2 },
+  "block-alias": { "name": "hd", "target": "hd-img", "fallback": "hd-part" },
+  "block-file:2": { "name": "hd0-img", "path": "/sdcard/hd0.img" },
+  "block-file:3": { "name": "hd1-img", "path": "/sdcard/hd1.img" },
+  "block-file:4": { "name": "hd2-img", "path": "/sdcard/hd2.img" },
+  "block-file:5": { "name": "hd3-img", "path": "/sdcard/hd3.img" },
+  "block-file:6": { "name": "hd4-img", "path": "/sdcard/hd4.img" },
+  "block-file:7": { "name": "hd5-img", "path": "/sdcard/hd5.img" },
+  "block-file:8": { "name": "hd7-img", "path": "/sdcard/hd7.img" }
+}

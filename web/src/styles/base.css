@@ -1,0 +1,87 @@
+/* 全局布局 + 通用组件（状态条 / 面板 / 触摸板 / 菜单 / 软盘行 / 上传 / toast） */
+
+* { box-sizing: border-box; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+html, body { height: 100%; }
+body { background:#f0ede6; color:#333; font-family: system-ui, sans-serif; margin:0; padding:8px; display:flex; flex-direction:column; }
+/* Preact 挂载层：继承 body 的列布局，保证 padwrap 撑开、键盘贴底 */
+#app { display:flex; flex-direction:column; flex:1; min-height:0; }
+/* 左列（状态栏+触摸板）：竖屏撑满中间高度，横屏撑满左侧宽度 */
+.main-col { flex:1; display:flex; flex-direction:column; min-width:0; min-height:0; }
+
+.status { font-size:12px; color:#8a857a; margin:2px 8px 6px; display:flex; align-items:center; gap:6px; }
+#dot { display:inline-block; width:10px; height:10px; border-radius:50%; background:#9a9386; vertical-align:middle; }
+.floppyicon { margin-left:auto; width:18px; height:18px; background:url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect x='2.5' y='2.5' width='11' height='11' rx='1' fill='none' stroke='%23333' stroke-width='1.5'/%3E%3Crect x='4.5' y='9.5' width='7' height='4' fill='none' stroke='%23333' stroke-width='1'/%3E%3Crect x='5.5' y='3.5' width='5' height='3' fill='%23333'/%3E%3C/svg%3E") center/contain no-repeat; opacity:.22; filter:grayscale(1); transition:opacity .3s, filter .3s; }
+.floppyicon.on { opacity:1; filter:none; }
+/* 状态栏下拉菜单（设备操作）——触发器对齐 fsbtn 浅色细线小图标钮 */
+.devmenu { position: relative; }
+.devmenu-btn {
+  flex: none; width: 22px; height: 20px; padding: 0; margin-left: 2px;
+  background: none; border: 1px solid #c9c3b5; border-radius: 4px; color: #8a857a;
+  font-size: 13px; line-height: 1;
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer; touch-action: manipulation; box-shadow: none;
+}
+.devmenu-btn:active { background: #d8d2c4; }
+.devmenu-pop {
+  position: absolute; right: 0; top: calc(100% + 4px); z-index: 50;
+  min-width: 200px; background: #e6e2d8; border: 1px solid #b5b0a4; border-radius: 8px;
+  box-shadow: 0 6px 18px rgba(0,0,0,.25); padding: 4px; display: flex; flex-direction: column;
+}
+.devmenu-item {
+  display: flex; align-items: center; gap: 8px;
+  flex: none; padding: 8px 10px; background: transparent; border: none; border-radius: 6px;
+  color: #3a362f; font-size: 13px; cursor: pointer; text-align: left;
+}
+.devmenu-item:hover { background: #d8d3c6; }
+.devmenu-ico { width: 18px; text-align: center; flex: none; }
+.devmenu-sep { height: 1px; background: #c9c3b5; margin: 3px 2px; }
+/* 状态栏全屏按钮：floppyicon 旁边的小图标钮 */
+.fsbtn { width:20px; height:20px; margin-left:2px; padding:0; background:none; border:1px solid #c9c3b5; border-radius:4px; color:#8a857a; font-size:12px; line-height:1; display:flex; align-items:center; justify-content:center; cursor:pointer; touch-action:manipulation; box-shadow:none; }
+.fsbtn:active { background:#d8d2c4; }
+
+.panel { background:#e6e2d8; border-radius:10px; padding:8px; margin:4px 0; }
+.panel.padwrap { flex:1; display:flex; flex-direction:column; min-height:120px; }
+#pad { flex:1; touch-action:none; background:#d9d4c9; border-radius:8px; position:relative; border:1px solid #c9c3b5; }
+#pad .hint { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; color:#9a9386; font-size:12px; text-align:center; }
+
+.menurow { display:flex; justify-content:center; gap:6px; }
+.menurow .btn { flex:1; padding:5px 2px; font-size:13px; }
+.menurow .sep { width:1px; background:#c9c3b5; margin:4px 2px; }
+.btn { flex:1; padding:10px; background:#5f5f5f; border:none; border-radius:6px; color:#fff; font-size:14px; box-shadow:0 2px 0 #474747; }
+.btn:active { background:#3e3e3e; box-shadow:0 1px 0 #474747; }
+
+.floppyrow { display:flex; margin:4px 0; gap:6px; align-items:center; }
+.shotbtn { flex-shrink:0; width:56px; height:42px; background:#d8d8d8; border:1.5px solid #404040; border-radius:5px; color:#000; cursor:pointer; display:flex; align-items:center; justify-content:center; box-shadow:0 1px 0 rgba(0,0,0,.25); touch-action:manipulation; }
+.shotbtn:active { background:#c2c2c2; }
+.shotbtn::before { content:''; width:18px; height:18px; background:url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'%3E%3Crect x='2.5' y='4.5' width='15' height='11.5' rx='1.5' fill='none' stroke='%23333' stroke-width='1.5'/%3E%3Ccircle cx='10' cy='10.5' r='3.4' fill='none' stroke='%23333' stroke-width='1.5'/%3E%3Cpath d='M8 4.5l1-2h2l1 2' fill='none' stroke='%23333' stroke-width='1.4'/%3E%3C/svg%3E") center/contain no-repeat; }
+
+.upbtn { flex:1; height:42px; background:#d8d8d8; border:1.5px solid #404040; border-radius:5px; color:#000; text-align:center; padding:10px 12px; box-shadow:0 1px 0 rgba(0,0,0,.25); cursor:pointer; user-select:none; -webkit-user-select:none; touch-action:manipulation; display:flex; align-items:center; justify-content:center; font-size:14px; }
+.upbtn:active { background:#c2c2c2; }
+.upbtn.busy { animation:pulse 1.2s ease-in-out infinite; }
+@keyframes pulse { 0%,100% { background:#d8d8d8; } 50% { background:#c4c4c4; } }
+.upbtn.busy .upmain::before { background:none; border:2px solid #9a9a9a; border-top-color:#333; border-radius:50%; animation:spin .8s linear infinite; }
+@keyframes spin { to { transform:rotate(360deg); } }
+.upmain { font-size:14px; }
+.upmain::before { content:''; display:inline-block; width:15px; height:15px; background:url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect x='2.5' y='2.5' width='11' height='11' rx='1' fill='none' stroke='%23333' stroke-width='1.5'/%3E%3Crect x='4.5' y='9.5' width='7' height='4' fill='none' stroke='%23333' stroke-width='1'/%3E%3Crect x='5.5' y='3.5' width='5' height='3' fill='%23333'/%3E%3C/svg%3E") center/contain no-repeat; vertical-align:-2px; margin-right:6px; }
+
+.toast { position:fixed; left:50%; bottom:140px; transform:translateX(-50%); background:#e4e0d6; border:1.5px solid #404040; border-radius:6px; color:#000; font-size:13px; padding:10px 14px; box-shadow:0 2px 10px rgba(0,0,0,.25); z-index:99; display:none; max-width:82vw; text-align:center; line-height:1.4; }
+.toast.show { display:block; }
+.toast.err { border-color:#c22; color:#a11; }
+
+/* ── 横屏适配：grid 两栏，状态栏在左列顶部 ──
+ * 竖屏下 #app 是 flex column（状态栏顶部），此规则不生效 */
+@media (orientation: landscape) {
+  #app { display: grid; grid-template-columns: 46% 1fr; grid-template-rows: auto 1fr; gap: 8px; }
+  /* 状态栏 → 左列顶部；键盘列 → 左列下方；触摸板 → 右列整高 */
+  #app .status { grid-column: 1; grid-row: 1; align-self: end; margin: 0; }
+  #app .landscape-side { grid-column: 1; grid-row: 2; width: auto; max-width: none; display: flex; flex-direction: column; gap: 4px; min-height: 0; }
+  #app .main-col { grid-column: 2; grid-row: 1 / 3; }
+  .landscape-side .menurow { margin: 0; }
+  .landscape-side .menurow .btn { padding: 4px 2px; font-size: 12px; }
+  .landscape-side .floppyrow { margin: 0; }
+  .landscape-side .kb-panel { flex: 1; display: flex; flex-direction: column; min-height: 0; padding: 4px; }
+  .landscape-side .kb { flex: 1; }
+  .landscape-side .krow { flex: 1; }
+  .landscape-side .key { padding: 4px 1px; font-size: 12px; }
+  #pad .hint { font-size: 10px; }
+}

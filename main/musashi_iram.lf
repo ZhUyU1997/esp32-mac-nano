@@ -1,0 +1,5 @@
+[mapping:main_musashi_iram]
+archive: libmain.a
+entries:
+    m68kopdm (noflash)
+    m68kcpu (noflash)
