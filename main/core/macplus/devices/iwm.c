@@ -1,5 +1,5 @@
 /*****************************************************************************
- * IWM stub — behaviour notes: upstream pce/src/arch/macplus/iwm.c
+ * IWM stub — derived from PCE src/arch/macplus/iwm.c (GPL-2.0).
  *****************************************************************************/
 
 #include <string.h>

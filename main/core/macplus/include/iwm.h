@@ -1,5 +1,5 @@
 /*
- * IWM stub — full PCE types/API: upstream pce/src/arch/macplus/iwm.h
+ * IWM stub — derived from PCE src/arch/macplus/iwm.h (GPL-2.0).
  * One instance: macplus_t.iwm in macplus.c (same idea as PCE macplus_t.iwm).
  */
 
