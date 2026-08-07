@@ -1,6 +1,6 @@
 # Web 烧写方案 — 设计决策与软件待办清单
 
-> 状态：核心链路已实现并真机验证。本文沉淀设计决策 + 软件域待办。
+> 状态：核心链路已实现并真机验证；阶段 4（防砖）部分落地（rollback 使能 + 物理键强制 Flash Mode 已实现，ota_0 目标切换待做）。本文沉淀设计决策 + 软件域待办。
 
 ## 方案概述
 
@@ -20,8 +20,11 @@ pause menu "Flash Mode" → 写 NVS → esp_restart
 
 - [x] Flash Mode 固件机制：NVS 一次性标志（进入即清）+ 跳过 `usb_hid_main` + 全屏提示页 + pause menu 按钮
 - [x] PHY 归还：`input-usb-hid.c` 注册 `esp_register_shutdown_handler`，重启前把共享 internal PHY 还给 USJ（Flash Mode 零 USB 代码）
-- [x] 网页烧写器 `web/flash.html`：连接 / 固件包 zip（JSZip + SHA256）/ DIY / 进度 / 日志
+- [x] 网页烧写器 `web/flash.html`：连接 / 固件包 zip（JSZip + SHA256）/ 进度 / 日志（手动分区 DIY 已移除，可能回归）
 - [x] `make webflash`：manifest.json + zip 固件包构建（`tools/make_webflash.py`）
+- [x] 启动早期物理键强制 Flash Mode（`flash_mode.c`：app_main 第一行 GPIO 直读，GPIO15 三连采样去抖，零依赖）
+- [x] `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y`（`sdkconfig.defaults`）+ 启动即 `esp_ota_mark_app_valid_cancel_rollback()`（`main.c` → `upgrade_sdcard.c`）
+- [x] P0：git commit 当前成果
 
 ## 关键技术决策（勿随意改动）
 
@@ -35,18 +38,18 @@ pause menu "Flash Mode" → 写 NVS → esp_restart
 ## 软件域待办清单
 
 ### P0 收尾
-- [ ] git commit 当前成果
+- [x] git commit 当前成果（工作区已干净，全部提交）
 
 ### P1 防砖定稿（阶段 4）
-- [ ] 开启 `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE`（`sdkconfig.defaults`）
-- [ ] 网页烧写目标切 ota_0 + 生成"指向 ota_0"的 otadata bin（factory 留 known-good）
-- [ ] **ota_1 去留决策**：留 = SD 升级 A/B 轮换、两级回滚；去 = hd 扩 10M（需重建分区表 + hd 镜像）
+- [x] 开启 `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE`（`sdkconfig.defaults`，已生效）
+- [ ] 网页烧写目标切 ota_0（0x20000）+ 生成"指向 ota_0"的 otadata bin（factory 留 known-good；现 manifest 仍是 factory 0x10000 + 空白 otadata 0xFF）
+- [ ] **ota_1 去留决策**：留 = SD 升级 A/B 轮换、两级回滚；去 = hd 扩 10M（需重建分区表 + hd 镜像）。现状：SD 升级已走 `esp_ota_get_next_update_partition`（A/B 轮换）+ 启动 `esp_ota_mark_app_valid_cancel_rollback` 确认
 
 ### P2 鲁棒性增强
-- [ ] 烧写顺序：app 先、**otadata 最后**（半途断电时旧固件仍可启动）
-- [ ] WDT 覆盖评估（现状 `CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0/1=n`）
+- [ ] 烧写顺序：app 先、**otadata 最后**（现 `make_webflash.py` 按地址排序，otadata 0xd000 在 app 之前；切 ota_0 后必须先做）
+- [ ] WDT 覆盖评估（现状 `CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0/1=n`、`CONFIG_ESP_INT_WDT_CHECK_CPU1=n`、`CONFIG_ESP_SYSTEM_PANIC_PRINT_HALT=y`）
 - [ ] panic 自动进 Flash Mode（`esp_reset_reason()==ESP_RST_PANIC` + panic REBOOT）— 可选
-- [ ] 启动早期物理键强制 Flash Mode（GPIO 直读，app_main 第一行）— 可选
+- [x] 启动早期物理键强制 Flash Mode（GPIO 直读，app_main 第一行）— 已实现（GPIO15）
 - [ ] 故障注入测试框架（Kconfig 隔离）— 可选
 
 ### P3 发布（阶段 5）
@@ -60,8 +63,8 @@ pause menu "Flash Mode" → 写 NVS → esp_restart
 ## 建议顺序
 
 ```
-P0 commit → P1 防砖定稿（2/3/4 一次改完）→ P2 顺序加固 → WDT 评估
-→ P3 发布 → 文档 → 可选扩展
+P0 ✓ → P1 防砖定稿（剩 ota_0 目标 + 指向性 otadata + ota_1 决策）→ P2 顺序加固（otadata 后置）
+→ WDT 评估 → P3 发布 → 文档 → 可选扩展
 ```
 
 ## 恢复层次（软件域内无砖）
