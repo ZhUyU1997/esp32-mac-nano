@@ -40,7 +40,7 @@ ESP32-S3 上的 Macintosh Plus 模拟器：
 > ROM 版权归 Apple 所有，**不随本仓库分发**，请自行获取：
 
 - 从你合法持有的 Macintosh Plus 中提取（Mini vMac 的 [CopyRoms](https://www.gryphel.com/c/minivmac/extras/copyroms/index.html) 工具）
-- 或从 [archive.org（mac_rom_archive 集合）](https://archive.org/download/mac_rom_archive_-_as_of_8-19-2011/mac_rom_archive_-_as_of_8-19-2011.zip/4D1F8172%20-%20MacPlus%20v3.ROM) 获取（版权归 Apple，请自行确认你所在司法管辖区是否允许）
+- 或从 [archive.org（mac_rom_archive 集合）](https://archive.org/download/mac_rom_archive_-_as_of_8-19-2011/mac_rom_archive_-_as_of_8-19-2011.zip/4D1F8172%20-%20MacPlus%20v3.ROM) 获取（请自行确认你所在司法管辖区是否允许）
 
 下载后将文件命名为 `macintosh/rom.bin` 即可。
 

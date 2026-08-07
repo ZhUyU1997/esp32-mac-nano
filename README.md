@@ -40,7 +40,7 @@ Macintosh Plus emulator for ESP32-S3:
 > The ROM is copyrighted by Apple and **is not distributed with this repository**. Obtain it yourself:
 
 - Dump it from a Macintosh Plus you legally own (e.g. Mini vMac's [CopyRoms](https://www.gryphel.com/c/minivmac/extras/copyroms/index.html) tool)
-- Or download it from [archive.org (mac_rom_archive collection)](https://archive.org/download/mac_rom_archive_-_as_of_8-19-2011/mac_rom_archive_-_as_of_8-19-2011.zip/4D1F8172%20-%20MacPlus%20v3.ROM) (copyrighted by Apple — please verify it is allowed in your jurisdiction)
+- Or download it from [archive.org (mac_rom_archive collection)](https://archive.org/download/mac_rom_archive_-_as_of_8-19-2011/mac_rom_archive_-_as_of_8-19-2011.zip/4D1F8172%20-%20MacPlus%20v3.ROM) (verify it is allowed in your jurisdiction)
 
 Name the file `macintosh/rom.bin`.
 
