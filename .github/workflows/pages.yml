@@ -1,0 +1,68 @@
+# Deploy the web flasher (flash.html) + landing page to GitHub Pages.
+#
+# Trigger: push to main touching web/ (firmware release decoupled from the
+# web page — flash.html is static, no firmware build needed here).
+#   workflow_dispatch: manual re-deploy without a push.
+#
+# One-time repo setup (cannot be done from Actions):
+#   Settings → Pages → Build and deployment → Source: "GitHub Actions"
+name: deploy pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "web/**"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22 # vite 8 requires >=22.12
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+
+      - name: install deps
+        working-directory: web
+        run: pnpm install --frozen-lockfile
+
+      - name: build flash.html
+        working-directory: web
+        run: pnpm build:flash
+
+      - name: assemble site
+        run: |
+          mkdir -p _site
+          # flash.html is the site root — no landing page, visiting / opens the flasher
+          cp web/dist-flash/flash.html _site/index.html
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
