@@ -1,6 +1,6 @@
 # Web 烧写方案 — 设计决策与软件待办清单
 
-> 状态：核心链路已实现并真机验证；阶段 4（防砖）部分落地（rollback 使能 + 物理键强制 Flash Mode 已实现，ota_0 目标切换待做）。本文沉淀设计决策 + 软件域待办。
+> 状态：核心链路已实现并真机验证；阶段 4（防砖）部分落地（rollback 使能 + 物理键强制 Flash Mode 已实现，ota_0 目标切换待做）；阶段 5 网页部署已上线（gh-pages 烧写器）。本文沉淀设计决策 + 软件域待办。
 
 ## 方案概述
 
@@ -53,8 +53,11 @@ pause menu "Flash Mode" → 写 NVS → esp_restart
 - [ ] 故障注入测试框架（Kconfig 隔离）— 可选
 
 ### P3 发布（阶段 5）
-- [ ] GitHub Actions：tag → build → `make webflash` → Release + gh-pages
-- [ ] flash.html 版本列表（Releases API 自动拉取）
+- [x] gh-pages 部署烧写器：`https://zhuyu1997.github.io/esp32-mac-nano/`（flash.html 即站点根，无入口页；`web/**` push 自动部署 + `workflow_dispatch` 手动；`.github/workflows/pages.yml`，node24 运行时 actions）
+- [x] README 双语加烧写器链接（badge + 特性列表，措辞改为"浏览器网页烧写（USB + WebSerial）"而非"OTA"）
+- [ ] GitHub Actions 固件构建：tag → build → `make webflash` → Release 资产 + 更新 gh-pages 版本列表源。**前置问题：`macintosh/rom.bin` 不入库但编译进固件，CI 构建需解决 ROM 来源**（编译进固件，非运行时加载）
+- [ ] flash.html 版本列表（Releases API 自动拉取，等有 Release 后做）
+- [ ] 约束备忘：gh-pages 依赖仓库 public（GitHub Free 套餐私有仓库不支持 Pages）；私有仓库 Actions 限 2000 分/月（Free）
 
 ### P4 可选扩展
 - [ ] UF2 模式（TinyUSB MSC，手机拖文件烧写；能力弱于 WebSerial）
@@ -64,7 +67,7 @@ pause menu "Flash Mode" → 写 NVS → esp_restart
 
 ```
 P0 ✓ → P1 防砖定稿（剩 ota_0 目标 + 指向性 otadata + ota_1 决策）→ P2 顺序加固（otadata 后置）
-→ WDT 评估 → P3 发布 → 文档 → 可选扩展
+→ WDT 评估 → P3 网页 ✓（剩固件构建 CI + 版本列表）→ 文档 → 可选扩展
 ```
 
 ## 恢复层次（软件域内无砖）
