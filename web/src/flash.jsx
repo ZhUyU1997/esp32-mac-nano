@@ -43,6 +43,11 @@ async function loadFirmwarePackage(file, log) {
 /* ── Main component ─────────────────────────────────────────────── */
 
 function FlashTool() {
+  /* WebSerial support gate: only desktop Chrome/Edge expose navigator.serial.
+   * Detect upfront so unsupported browsers get a clear message instead of a
+   * dead "connect" button. */
+  const serialOk = typeof navigator !== 'undefined' && 'serial' in navigator;
+
   const [conn, setConn] = useState('idle');       /* idle | connecting | connected */
   const [dev, setDev] = useState(null);           /* {chip, flash} | null */
   const [banner, setBanner] = useState(null);
@@ -238,6 +243,17 @@ function FlashTool() {
   }
 
   /* ── Render ──────────────────────────────────────────────────── */
+
+  if (!serialOk) {
+    return (
+      <div id="noserial">
+        <h2>此浏览器不支持 WebSerial</h2>
+        <p>网页烧写需要 <b>WebSerial</b> API，目前仅<b>桌面版 Chrome / Edge</b> 支持。</p>
+        <p>当前浏览器无法连接 ESP32-S3 设备，请使用电脑上的 Chrome 或 Edge 打开本页。</p>
+        <p class="hint">Android / iOS 浏览器均不支持 WebSerial。</p>
+      </div>
+    );
+  }
 
   const step1 = conn === 'connected' ? 'done' : 'active';
   const step2 = conn === 'connected' ? (hasFw ? 'done' : 'active') : '';
