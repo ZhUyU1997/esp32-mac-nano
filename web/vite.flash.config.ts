@@ -1,5 +1,5 @@
-// 独立构建配置：flash.html 网页烧写器（单文件，部署到 GitHub Pages）
-// 与主配置分离：多入口 + singlefile 的 codeSplitting=false 冲突（vite 8）
+// Standalone build config: flash.html web flasher (single-file, deployed to GitHub Pages)
+// Separate from main config: multi-entry + singlefile codeSplitting=false conflict (vite 8)
 import { defineConfig } from 'vite';
 import preact from '@preact/preset-vite';
 import { viteSingleFile } from 'vite-plugin-singlefile';
@@ -15,7 +15,7 @@ export default defineConfig({
     target: 'es2018',
     assetsInlineLimit: 100000000,
     cssCodeSplit: false,
-    // 独立输出目录，避免清空 dist/（index.html 嵌入固件）
+    // Separate output dir to avoid wiping dist/ (index.html embedded in firmware)
     outDir: 'dist-flash',
     rollupOptions: {
       input: { flash: path.join(__dirname, 'flash.html') },

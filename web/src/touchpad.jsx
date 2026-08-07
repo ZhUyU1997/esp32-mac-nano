@@ -6,9 +6,10 @@ const TAP_MAX_MS = 400;   /* touch must be quick to count as a tap */
 const DRAG_HOLD_MS = 250;
 
 /* touchpad: slide=move, tap=left click, hold+slide=drag
- * 手势区域用原生 addEventListener（小写事件名）——绕开 Preact 对 touch 事件
- * 命名大小写的处理差异（桌面环境 'ontouchstart' in el = false 时事件名会被
- * 保留原大小写导致 handler 查不到），与 Cropper 同款命令式共存策略。 */
+ * Gesture area uses native addEventListener (lowercase event names) to bypass Preact's
+ * handling of touch event name casing (on desktop where 'ontouchstart' in el = false,
+ * the original casing is kept so handlers can't be found) — same imperative coexistence
+ * strategy as Cropper. */
 export function Touchpad() {
   const padRef = useRef(null);
   const hintRef = useRef(null);

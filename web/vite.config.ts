@@ -1,4 +1,4 @@
-// Vite 配置：dev = mock serve（API/WS 中间件），build = 单文件 index.html（vite-plugin-singlefile）
+// Vite config: dev = mock serve (API/WS middleware), build = single-file index.html (vite-plugin-singlefile)
 import { defineConfig, type Plugin } from 'vite';
 import preact from '@preact/preset-vite';
 import { viteSingleFile } from 'vite-plugin-singlefile';
@@ -10,7 +10,7 @@ import { WebSocketServer, type WebSocket } from 'ws';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-// 截屏帧：真实图片（640x480 RGBA PNG）→ 灰度阈值 → 1-bit（1=黑 0=白）——同原 server.ts
+// Screenshot frame: real image (640x480 RGBA PNG) → grayscale threshold → 1-bit (1=black 0=white) — same as original server.ts
 const FRAME = Buffer.alloc((640 * 480) / 8);
 {
   const png = PNG.sync.read(readFileSync(path.join(__dirname, 'test/fixtures/1785865268148.png')));
@@ -29,7 +29,7 @@ const json = (res: any, obj: unknown) => {
   res.end(JSON.stringify(obj));
 };
 
-// mock API 中间件 + WebSocket（原 server.ts 逻辑）
+// mock API middleware + WebSocket (logic from original server.ts)
 function mockApi(): Plugin {
   const api = (req: any, res: any, next: () => void) => {
     const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
@@ -53,11 +53,11 @@ function mockApi(): Plugin {
     next();
   };
   const attachWs = (httpServer: any) => {
-    // noServer 模式：只接管 /ws 的 upgrade——vite 自己的 HMR ws 不受影响
+    // noServer mode: only handle /ws upgrade — vite's own HMR ws unaffected
     const wss = new WebSocketServer({ noServer: true });
     httpServer.on('upgrade', (req: any, socket: any, head: any) => {
       const url = new URL(req.url ?? '/', 'http://localhost');
-      if (url.pathname !== '/ws') return; // 非我们的——交给 vite（HMR 等）
+      if (url.pathname !== '/ws') return; // not ours — pass through to vite (HMR etc.)
       wss.handleUpgrade(req, socket, head, ws => wss.emit('connection', ws, req));
     });
     wss.on('connection', (ws: WebSocket) => {
@@ -98,11 +98,11 @@ function mockApi(): Plugin {
 export default defineConfig({
   root: __dirname,
   plugins: [preact(), mockApi(), viteSingleFile()],
-  server: { port: 8899, strictPort: false }, // 被占时自动换下一个端口
+  server: { port: 8899, strictPort: false }, // auto-pick next port if taken
   preview: { port: 8899, strictPort: false },
   build: {
     target: 'es2018',
-    assetsInlineLimit: 100000000, // 内联所有资源（单文件兜底）
+    assetsInlineLimit: 100000000, // inline all assets (single-file fallback)
     cssCodeSplit: false,
   },
 });

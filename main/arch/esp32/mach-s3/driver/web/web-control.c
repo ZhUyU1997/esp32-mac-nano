@@ -213,7 +213,7 @@ static esp_err_t handle_hotspot_detect(httpd_req_t *req)
 	return httpd_resp_send(req, "<HTML><HEAD><TITLE>Success</TITLE></HEAD><BODY>Success</BODY></HTML>", HTTPD_RESP_USE_STRLEN);
 }
 
-/* 静态资源已合并进 index.html（web/dist）——不再单独嵌入 */
+/* Static assets are inlined into index.html (web/dist) — no separate embedding */
 
 /* Screenshot: latest 1-bit Mac frame (640x480 = 38400 bytes). */
 static esp_err_t handle_screenshot(httpd_req_t *req)
@@ -267,7 +267,7 @@ static esp_err_t handle_floppy_upload(httpd_req_t *req)
 		got += (size_t)r;
 	}
 
-	/* 写盘：先 SD，失败 fallback RAMFS（/ram，无 SD 时）——再失败报错 */
+	/* Write: try SD first, fall back to RAMFS (/ram when no SD), report error if both fail */
 	const char *path = "/sdcard/upload.dsk";
 	fp = fopen(path, "wb");
 	if (fp == NULL) {
@@ -287,7 +287,7 @@ static esp_err_t handle_floppy_upload(httpd_req_t *req)
 		return httpd_resp_send(req, "sd write failed", HTTPD_RESP_USE_STRLEN);
 	}
 
-	/* insert + persist 用实际写入的路径（/sdcard 或 /ram） */
+	/* insert + persist use the actually written path (/sdcard or /ram) */
 	mac_msg_submit("floppy.insert", path);
 	(void)mach_s3_settings_persist_set_floppy_path(path);
 	httpd_resp_set_type(req, "application/json");

@@ -24,7 +24,7 @@ export function Keyboard() {
         <div className="krow" key={ri}>
           {row.map(([usage, label, cls], ci) => {
             if (usage === 'cap') {
-              /* CapsLock: toggle（由信号驱动高亮） */
+              /* CapsLock: toggle (highlight driven by signal) */
               return (
                 <button key={ci} id="capKey"
                   className={'key' + (capsLocked.value ? ' on' : '')}

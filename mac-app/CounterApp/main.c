@@ -49,14 +49,14 @@ static void draw_content(void)
     SetPort(mainWindow);
     EraseRect(&mainWindow->portRect);
 
-    /* 标题 */
+    /* Title */
     MoveTo(20, 30);
     TextSize(14);
     TextFace(bold);
     DrawString("\pCounter App");
     TextFace(0);
 
-    /* 计数标签 */
+    /* Counter label */
     sprintf(buf, "Count: %d", counter);
     ctopstr(buf);
     MoveTo(20, 70);

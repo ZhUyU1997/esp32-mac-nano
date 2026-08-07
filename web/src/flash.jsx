@@ -50,7 +50,7 @@ function FlashTool() {
   const [pkgError, setPkgError] = useState('');
   const [logOpen, setLogOpen] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [flashed, setFlashed] = useState(false);   /* 本次会话是否已烧写完成 */
+  const [flashed, setFlashed] = useState(false);   /* whether flashing completed this session */
   const [progress, setProgress] = useState(null); /* {pct, text} | null */
 
   const logRef = useRef(null);
@@ -67,7 +67,7 @@ function FlashTool() {
     el.scrollTop = el.scrollHeight;
   }, []);
 
-  /* 标题栏状态点随连接状态变化：空闲红呼吸 / 连接中琥珀闪 / 已连接绿常亮 */
+  /* title-bar status dot follows connection state: idle = red breathing / connecting = amber blink / connected = steady green */
   useEffect(() => {
     const dot = document.querySelector('.titlebar .dot');
     if (!dot) return;
@@ -80,7 +80,7 @@ function FlashTool() {
     write: (d) => log(d),
   }), [log]);
 
-  /* 固件来源：固件包 zip（手动分区功能暂移除，后续再加） */
+  /* firmware source: firmware package zip (manual partition feature removed for now, may return later) */
   const hasFw = !!pkg;
 
   const fwSummary = () => {
@@ -97,7 +97,7 @@ function FlashTool() {
     try {
       const port = await navigator.serial.requestPort({ filters: [{ usbVendorId: 0x303a }] });
       portRef.current = port;
-      /* 不手动 port.open()——esptool-js 的 Transport.connect() 自己打开 */
+      /* no manual port.open() — esptool-js Transport.connect() opens it itself */
       const loader = new ESPLoader({
         transport: new Transport(port),
         baudrate: 460800,
@@ -106,12 +106,12 @@ function FlashTool() {
       });
       loaderRef.current = loader;
       log('连接设备，等待 esptool-js 握手复位…');
-      await loader.main();   /* 检测 USJ PID → DTR/RTS 握手复位 → 连接 */
+      await loader.main();   /* detect USJ PID → DTR/RTS handshake reset → connect */
       setConn('connected');
       setFlashed(false);
       setLogOpen(true);
       log('连接成功 — 可以加载固件');
-      /* 设备信息 */
+      /* device info */
       const chip = loader.chip?.CHIP_NAME ?? 'ESP32-S3';
       let flashSize = '?';
       try { flashSize = await loader.detectFlashSize(); } catch { /* ignore */ }
@@ -142,8 +142,8 @@ function FlashTool() {
     log('已断开');
   }
 
-  /* 烧写完成：设备 hard_reset 重启后 USB 已断，主动结束连接。
-   * 保留 flashed / progress（“烧写完成”反馈），只重置连接状态。 */
+  /* flashing done: device rebooted via hard_reset, USB dropped — proactively end the connection.
+   * keep flashed / progress (“flashing complete” feedback), only reset connection state. */
   async function finishAfterFlash() {
     try { await loaderRef.current?.disconnect(); } catch { /* ignore */ }
     if (portRef.current) {
@@ -217,13 +217,13 @@ function FlashTool() {
       setProgress({ pct: 100, text: '校验完成，重启设备…' });
       log(`写入 ${total} 字节完成，校验通过 ✓`);
 
-      /* 官方 esp-web-tools 写法：先拉低 RTS 进入复位，再 after() 释放 */
+      /* official esp-web-tools pattern: pull RTS low to reset first, then release via after() */
       await loader.transport.setRTS(true);
       await loader.after('hard_reset');
       log('设备已重启 — 应自动回到正常模式');
       setFlashed(true);
       setProgress({ pct: 100, text: '烧写完成 ✓' });
-      await finishAfterFlash();   /* 设备重启 USB 断连，结束连接状态 */
+      await finishAfterFlash();   /* device rebooted, USB dropped — end connection state */
     } catch (err) {
       setBanner(`烧写失败: ${err?.message ?? err}`);
       log(`烧写失败: ${err?.message ?? err}`, true);

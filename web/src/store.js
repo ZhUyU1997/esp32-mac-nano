@@ -1,6 +1,6 @@
 import { signal } from '@preact/signals';
 
-/* ── 全局状态（preact/signals）── */
+/* ── Global state (preact/signals) ── */
 export const statusText = signal('连接中…');
 export const dotColor = signal('#9a9386');
 export const connected = signal(false);
@@ -13,12 +13,12 @@ export const upBusy = signal(false);
 export const upTxt = signal('');
 export const shotBusy = signal(false);
 
-/* ── WebSocket 协议层（原 main.js 原样搬运）── */
+/* ── WebSocket protocol layer (moved verbatim from original main.js) ── */
 const MOD = { 0xe0: 0x01, 0xe1: 0x02, 0xe2: 0x04, 0xe3: 0x08, 0xe5: 0x20 }; /* ctrl shift alt gui rshift */
 
 let ws = null;
 let reconnectTimer = null;
-let suppressReconnect = false;   /* 页面隐藏时主动关闭，禁止自动重连 */
+let suppressReconnect = false;   /* closed on page hide, no auto-reconnect */
 let mod = 0;
 const keys = new Set();
 
@@ -48,7 +48,7 @@ export function connect() {
     connected.value = true;
     sendKb();
     setStatus('已连接', '#4caf50');
-    sendQuery(0x01);   /* 初始状态同步 */
+    sendQuery(0x01);   /* initial state sync */
   };
   ws.onmessage = e => {
     const f = new Uint8Array(e.data);
@@ -63,9 +63,9 @@ export function connect() {
   };
 }
 
-/* 页面切走/熄屏 → 主动关 WS（释放连接槽，避免多开/僵尸占槽）；
- * 回到前台 → 立即重连（onopen 会重新同步状态）。
- * 多开时只有活动页面持有 WS 连接。 */
+/* Page hidden/screen off → close WS proactively (free connection slot, avoid multiple
+ * zombie tabs); back to foreground → reconnect immediately (onopen re-syncs state).
+ * Only the active page holds the WS connection. */
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'hidden') {
     suppressReconnect = true;
@@ -75,7 +75,7 @@ document.addEventListener('visibilitychange', () => {
       ws = null;
     }
     connected.value = false;
-    setStatus('已断开', '#9a9386');   /* 页面切走：静默断开（不可见） */
+    setStatus('已断开', '#9a9386');   /* page hidden: silent close (invisible) */
   } else {
     suppressReconnect = false;
     connect();
@@ -122,9 +122,9 @@ export function sendSysKey(code, down) {
   ws.send(f.buffer);
 }
 
-/* ── 状态查询（WS 代替 HTTP /api/status 轮询）──
- * 上行 0x06 [query_id]，0xFF=全部；下行 0x05 [query_id] [value...]
- * 0x01=floppy。可扩展：新状态 = 固件一个 case + 这里一个分支。 */
+/* ── Status query (WS replaces HTTP /api/status polling) ──
+ * Up 0x06 [query_id], 0xFF=all; down 0x05 [query_id] [value...]
+ * 0x01=floppy. Extensible: new status = one firmware case + one branch here. */
 export function sendQuery(id) {
   if (!ws || ws.readyState !== 1) return;
   const f = new Uint8Array(2);
@@ -132,7 +132,7 @@ export function sendQuery(id) {
   ws.send(f.buffer);
 }
 
-/* 进入 Recover/Update 模式（设备重启，跳过 USB Host，暴露 USJ） */
+/* Enter Recover/Update mode (device restarts, skips USB Host, exposes USJ) */
 export function sendFlashMode() {
   if (!ws || ws.readyState !== 1) return;
   const f = new Uint8Array(1);
@@ -140,7 +140,7 @@ export function sendFlashMode() {
   ws.send(f.buffer);
 }
 
-/* 重启设备 */
+/* Reboot device */
 export function sendReboot() {
   if (!ws || ws.readyState !== 1) return;
   const f = new Uint8Array(1);
@@ -165,10 +165,10 @@ export function showToast(msg, isError) {
   toastTimer = setTimeout(() => { toastMsg.value = ''; }, isError ? 6000 : 4000);
 }
 
-/* ── floppy 状态轮询：走 WS 查询帧（免 HTTP 建连开销，连接槽不常驻）── */
+/* ── Floppy status polling: via WS query frames (no HTTP connection overhead, no persistent connection slot) ── */
 setInterval(() => {
   sendQuery(0x01);
 }, 2000);
 
-/* 启动连接 */
+/* Start connection */
 connect();

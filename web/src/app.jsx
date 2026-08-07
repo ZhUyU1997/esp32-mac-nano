@@ -6,7 +6,7 @@ import { FloppyRow } from './floppy.jsx';
 import { ScreenshotModal } from './screenshot.jsx';
 import { sendSysKey, sendFlashMode, sendReboot, dotColor, statusText, floppyOn, floppyTitle, toastMsg, toastErr, showToast } from './store.js';
 
-/* 全屏（Android Edge/Chrome 支持 Fullscreen API；iOS 不支持 → 提示用添加主屏幕） */
+/* Fullscreen (Android Edge/Chrome support Fullscreen API; iOS doesn't → prompt to use Add to Home Screen) */
 function FullscreenBtn() {
   const [fsOn, setFsOn] = useState(false);
   useEffect(() => {
@@ -34,7 +34,7 @@ function FullscreenBtn() {
   );
 }
 
-/* 状态栏下拉菜单：设备操作（进入 Recover/Update 等） */
+/* Status-bar dropdown menu: device actions (enter Recover/Update, etc.) */
 function DeviceMenu() {
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
@@ -115,7 +115,7 @@ function Toast() {
 }
 
 export function App() {
-  /* capture 是函数，不能用 useState 存（setState(fn) 会把 fn 当 updater 调用）——用 ref */
+  /* capture is a function; can't store with useState (setState(fn) would call fn as updater) — use a ref */
   const captureRef = useRef(null);
   return (
     <>

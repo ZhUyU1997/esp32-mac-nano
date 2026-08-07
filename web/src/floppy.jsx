@@ -4,10 +4,10 @@ import { MacPaintImage } from './macpaint.js';
 import { isConnected, upBusy, upTxt, shotBusy, showToast } from './store.js';
 
 const UP_ORIG = '上传图片到软盘';
-let imgSeq = 0;   /* 模块级：每次上传 = 全新盘（编号重置），组件重渲染不丢 */
+let imgSeq = 0;   /* module-level: each upload = fresh disk (numbering resets), survives re-render */
 
-/* 上传图片到软盘：每次上传 = 全新盘（当前选中的图打包——不累积、不加载旧盘）。
- * 软盘已插入时拒绝上传（需先 eject）。 */
+/* Upload images to floppy: each upload = fresh disk (packs currently selected images — no accumulation, no loading of old disks).
+ * Upload is rejected while a floppy is inserted (eject first). */
 export function FloppyRow({ onShot }) {
   const fileRef = useRef(null);
 
@@ -17,11 +17,11 @@ export function FloppyRow({ onShot }) {
       const timer = setTimeout(() => ac.abort(), 5000);
       const resp = await fetch('/api/status', { signal: ac.signal });
       clearTimeout(timer);
-      if (!resp.ok) return true;   /* 保守：查不到就当插入 */
+      if (!resp.ok) return true;   /* conservative: if unknown, treat as inserted */
       const j = await resp.json();
       return !!j.floppy;
     } catch (e) {
-      return true;                 /* 网络问题→保守拒绝 */
+      return true;                 /* network issue → conservative reject */
     }
   }
 
@@ -48,49 +48,49 @@ export function FloppyRow({ onShot }) {
       input.value = '';
       return;
     }
-    /* 上限 7 张（本次选择） */
+    /* Max 7 images (per selection) */
     if (input.files.length > 7) {
       showToast('一个软盘最多 7 张图片，请重新选择后再上传', true);
       input.value = '';
       return;
     }
-    /* 每次上传 = 全新盘：新建卷、编号重置 */
+    /* Each upload = fresh disk: create new volume, reset numbering */
     imgSeq = 0;
     const vol = new MFSVolume({ create: true, sizeKB: 400, volumeName: 'IMAGES' });
     const total = input.files.length;
     upBusy.value = true;
     let ok = 0, fail = 0, capFull = false;
     try {
-      /* 多图：逐张转 PNTG 写入新卷，最后统一上传一次 */
+      /* Multiple images: convert to PNTG one by one into the new volume, then upload once */
       for (let i = 0; i < total; i++) {
         const file = input.files[i];
         upTxt.value = '处理中 ' + (i + 1) + '/' + total + '…';
         try {
           const bmp = await createImageBitmap(file);
-          /* 等比缩放：宽铺满 576，高按比例 */
+          /* Uniform scale: width fills 576, height proportional */
           const sc = 576 / bmp.width;
           const w = 576;
           const h = Math.round(bmp.height * sc);
           const c = document.createElement('canvas');
-          c.width = 576; c.height = 720;              /* PNTG 画布 */
+          c.width = 576; c.height = 720;              /* PNTG canvas */
           const ctx = c.getContext('2d');
           ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, 576, 720);
           ctx.drawImage(bmp, 0, 0, w, h);
           const imgData = ctx.getImageData(0, 0, 576, 720);
           const mp = new MacPaintImage({ width: 576, height: 720, data: imgData.data });
           const pntg = mp.toArrayBuffer();
-          /* 容量预估：数据块 + 1 目录块——不足则停止（明显超容不传） */
+          /* Capacity estimate: data blocks + 1 directory block — stop if insufficient (skip clearly oversized) */
           const freeB = (vol.volumeInfo && vol.volumeInfo.freeAllocBlocks) || 0;
           const need = Math.ceil(pntg.byteLength / 512) + 1;
           if (need > freeB) {
             capFull = true; fail++;
-            break;   /* 后续图也不处理了 */
+            break;   /* skip remaining images too */
           }
           const fileName = 'IMG' + String(++imgSeq).padStart(3, '0');
           vol.writeFile(fileName, pntg, null, { type: 'PNTG', creator: 'MPNT' });
           ok++;
         } catch (err) {
-          /* 区分：容量不足 vs 图片本身问题 */
+          /* Distinguish: insufficient capacity vs. image problem */
           if (err && /free block|capacity|space|Not enough/i.test(err.message || '')) capFull = true;
           fail++;
         }
@@ -110,11 +110,11 @@ export function FloppyRow({ onShot }) {
     upTxt.value = '上传中…';
     try {
       const ac = new AbortController();
-      const timer = setTimeout(() => ac.abort(), 10000);   /* 上传超时 10s */
+      const timer = setTimeout(() => ac.abort(), 10000);   /* 10s upload timeout */
       const resp = await fetch('/api/floppy', { method: 'POST', body: vol.imageBuffer, signal: ac.signal });
       clearTimeout(timer);
       if (!resp.ok) {
-        /* 后端原因→中文+指引 */
+        /* backend error → localized message + hint */
         let why = '';
         try { why = (await resp.text()).trim(); } catch (err2) {}
         const map = {
@@ -136,7 +136,7 @@ export function FloppyRow({ onShot }) {
       if (err && err.name === 'AbortError') showToast('上传超时，请重试或检查连接', true);
       else showToast('连接失败，请检查 WiFi 连接后重试', true);
     }
-    input.value = '';                               /* 允许重复选同一文件 */
+    input.value = '';                               /* allow re-selecting the same file */
   }
 
   return (
