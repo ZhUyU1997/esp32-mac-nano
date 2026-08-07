@@ -12,6 +12,7 @@
   <img src="https://img.shields.io/badge/license-GPL--2.0--or--later-blue" alt="License">
   <img src="https://img.shields.io/badge/platform-ESP32--S3-orange" alt="Platform">
   <img src="https://img.shields.io/badge/cpu-68000-important" alt="CPU">
+  <a href="https://zhuyu1997.github.io/esp32-mac-nano/"><img src="https://img.shields.io/badge/web_flasher-online-2f81f7" alt="Web Flasher"></a>
 </p>
 
 ---
@@ -21,7 +22,7 @@ Macintosh Plus emulator for ESP32-S3:
 - Musashi 68000 CPU core, 4 MB RAM, 640×480 display
 - Full emulation of VIA, IWM, SCSI, RTC, keyboard and sound
 - Web UI: screenshots, HD wallpaper export, floppy upload
-- Web-based OTA updates
+- Browser-based firmware flashing ([web flasher](https://zhuyu1997.github.io/esp32-mac-nano/), WebSerial over USB)
 
 ## Quick Start
 

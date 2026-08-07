@@ -12,6 +12,7 @@
   <img src="https://img.shields.io/badge/license-GPL--2.0--or--later-blue" alt="License">
   <img src="https://img.shields.io/badge/platform-ESP32--S3-orange" alt="Platform">
   <img src="https://img.shields.io/badge/cpu-68000-important" alt="CPU">
+  <a href="https://zhuyu1997.github.io/esp32-mac-nano/"><img src="https://img.shields.io/badge/web_flasher-online-2f81f7" alt="Web Flasher"></a>
 </p>
 
 ---
@@ -21,7 +22,7 @@ ESP32-S3 上的 Macintosh Plus 模拟器：
 - 基于 Musashi 68000 CPU 核心，4 MB RAM，640×480 显示
 - 完整模拟 VIA、IWM、SCSI、RTC、键盘与声音
 - Web UI：截图、壁纸导出、软盘上传
-- 网页 OTA 升级
+- 浏览器网页烧写（[在线烧写器](https://zhuyu1997.github.io/esp32-mac-nano/)，USB + WebSerial）
 
 ## 快速上手
 
