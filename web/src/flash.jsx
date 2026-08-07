@@ -43,9 +43,13 @@ async function loadFirmwarePackage(file, log) {
 /* ── Main component ─────────────────────────────────────────────── */
 
 function FlashTool() {
-  /* WebSerial support gate: only desktop Chrome/Edge expose navigator.serial.
-   * Detect upfront so unsupported browsers get a clear message instead of a
-   * dead "connect" button. */
+  /* WebSerial support gate: only desktop Chrome/Edge expose navigator.serial,
+   * and only in a secure context (HTTPS or localhost). Detect upfront so
+   * unsupported browsers get a clear message instead of a dead button. */
+  /* Order matters: Chrome hides navigator.serial in non-secure contexts
+   * (file://, http://) — check secure context FIRST, otherwise an HTTPS
+   * requirement would be misreported as "browser unsupported". */
+  const secureOk = typeof window === 'undefined' || window.isSecureContext !== false;
   const serialOk = typeof navigator !== 'undefined' && 'serial' in navigator;
 
   const [conn, setConn] = useState('idle');       /* idle | connecting | connected */
@@ -244,13 +248,21 @@ function FlashTool() {
 
   /* ── Render ──────────────────────────────────────────────────── */
 
+  if (!secureOk) {
+    return (
+      <div id="noserial">
+        <h2>无法在此页面使用烧写功能</h2>
+        <p>网页烧写需要加密连接（HTTPS），当前页面不满足。</p>
+        <p>请打开 <b>https://zhuyu1997.github.io/esp32-mac-nano/</b> 使用本工具。</p>
+      </div>
+    );
+  }
   if (!serialOk) {
     return (
       <div id="noserial">
-        <h2>此浏览器不支持 WebSerial</h2>
-        <p>网页烧写需要 <b>WebSerial</b> API，目前仅<b>桌面版 Chrome / Edge</b> 支持。</p>
-        <p>当前浏览器无法连接 ESP32-S3 设备，请使用电脑上的 Chrome 或 Edge 打开本页。</p>
-        <p class="hint">Android / iOS 浏览器均不支持 WebSerial。</p>
+        <h2>此浏览器不支持网页烧写</h2>
+        <p>请用电脑上的 <b>Chrome</b> 或 <b>Edge</b> 浏览器打开本页。</p>
+        <p>手机浏览器、Safari、Firefox 均不支持。</p>
       </div>
     );
   }
