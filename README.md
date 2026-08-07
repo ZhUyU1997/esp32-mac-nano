@@ -1,6 +1,20 @@
-# esp32-mac-nano
+<h1 align="center">esp32-mac-nano</h1>
 
-[English](README.md) | [中文](README.zh.md)
+<p align="center">
+  [English](README.md) | [中文](README.zh.md)
+</p>
+
+<p align="center">
+  <em>A Macintosh Plus in your pocket — 68k emulator for ESP32-S3</em>
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/license-GPL--2.0--or--later-blue" alt="License">
+  <img src="https://img.shields.io/badge/platform-ESP32--S3-orange" alt="Platform">
+  <img src="https://img.shields.io/badge/cpu-68000-important" alt="CPU">
+</p>
+
+---
 
 Macintosh Plus emulator for ESP32-S3:
 

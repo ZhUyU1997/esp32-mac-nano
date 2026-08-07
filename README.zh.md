@@ -1,6 +1,20 @@
-# esp32-mac-nano
+<h1 align="center">esp32-mac-nano</h1>
 
-[English](README.md) | [中文](README.zh.md)
+<p align="center">
+  [English](README.md) | [中文](README.zh.md)
+</p>
+
+<p align="center">
+  <em>把 Macintosh Plus 装进口袋——ESP32-S3 上的 68k 模拟器</em>
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/license-GPL--2.0--or--later-blue" alt="License">
+  <img src="https://img.shields.io/badge/platform-ESP32--S3-orange" alt="Platform">
+  <img src="https://img.shields.io/badge/cpu-68000-important" alt="CPU">
+</p>
+
+---
 
 ESP32-S3 上的 Macintosh Plus 模拟器：
 
