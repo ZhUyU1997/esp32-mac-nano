@@ -1,7 +1,8 @@
-# Deploy the web flasher (flash.html) + landing page to GitHub Pages.
+# Deploy the web flasher (flash.html) to GitHub Pages.
 #
-# Trigger: push to main touching web/ (firmware release decoupled from the
-# web page — flash.html is static, no firmware build needed here).
+# flash.html is the site root: single-file, no landing page, visiting /
+# opens the flasher directly. Trigger: push to main touching web/ (the
+# flash tool is decoupled from firmware releases — no build needed here).
 #   workflow_dispatch: manual re-deploy without a push.
 #
 # One-time repo setup (cannot be done from Actions):
@@ -29,10 +30,15 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: pnpm/action-setup@v5
+        with:
+          # package.json lives in web/, not the repo root — point the
+          # action at it so pnpm version stays a single source of truth
+          # (packageManager field, verified against web/pnpm-lock.yaml)
+          package_json_file: web/package.json
+      - uses: actions/setup-node@v5
         with:
           node-version: 22 # vite 8 requires >=22.12
           cache: pnpm
@@ -52,8 +58,8 @@ jobs:
           # flash.html is the site root — no landing page, visiting / opens the flasher
           cp web/dist-flash/flash.html _site/index.html
 
-      - uses: actions/configure-pages@v5
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/configure-pages@v6
+      - uses: actions/upload-pages-artifact@v5
         with:
           path: _site
 
@@ -65,4 +71,4 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
