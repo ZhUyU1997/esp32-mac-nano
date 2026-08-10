@@ -158,7 +158,12 @@ body { background:#f0ede6; color:#333; font-family: system-ui, sans-serif; margi
 .wifi-ssid-name { color: #000; font-weight: 600; margin: 0 2px; }
 .wifi-success-ico { color: #34c759; display: flex; }
 /* 配网完成页：网址复制按钮 */
-.wifi-url { display: flex; align-items: center; gap: 6px; border: 0; background: #f2f2f7; border-radius: 8px; padding: 8px 14px; cursor: pointer; color: #007aff; touch-action: manipulation; }
-.wifi-url:active { background: #e5e5ea; }
-.wifi-url-host { font-size: 16px; font-weight: 500; }
 .wifi-url-copied { font-size: 13px; color: #34c759; font-weight: 500; }
+.wifi-ip { display: flex; align-items: center; gap: 6px; border: 0; background: #f2f2f7; border-radius: 8px; padding: 10px 16px; cursor: pointer; color: #007aff; touch-action: manipulation; }
+.wifi-ip:active { background: #e5e5ea; }
+.wifi-ip-host { font-size: 24px; font-weight: 600; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; letter-spacing: 1px; }
+.wifi-done { display: flex; align-items: center; gap: 8px; border: 0; background: #007aff; color: #fff; border-radius: 10px; padding: 12px 20px; font-size: 16px; font-weight: 600; cursor: pointer; touch-action: manipulation; }
+.wifi-done:active { background: #0066d6; }
+.wifi-done .wifi-url-copied { color: #fff; }
+.wifi-grace-count { color: #8e8e93; font-size: 12px; }
+.wifi-grace-msg { color: #34c759; font-size: 13px; font-weight: 500; text-align: center; }

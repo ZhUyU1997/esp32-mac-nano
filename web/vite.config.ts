@@ -54,7 +54,7 @@ function mockApi(): Plugin {
   const api = (req: any, res: any, next: () => void) => {
     const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
     const p = url.pathname;
-    if (p === '/api/status') return json(res, { floppy: false });
+    if (p === '/api/status') return json(res, { floppy: false, state: 'CONNECTED', sta: { ssid: 'Test-2.4G', ip: '192.168.1.42' } });
     if (p === '/api/screenshot') {
       res.writeHead(200, { 'content-type': 'application/octet-stream' });
       return res.end(FRAME);
@@ -78,6 +78,11 @@ function mockApi(): Plugin {
       wifiState = WIFI.PROVISIONING;
       failReason = 0;
       scanDone = false;
+      return json(res, { ok: true });
+    }
+    if (p === '/api/wifi/done' && req.method === 'POST') {
+      /* 成功页“复制并关闭配网热点”：mock 无真实热点，仅回 ok */
+      console.log('[mock] POST /api/wifi/done');
       return json(res, { ok: true });
     }
     if (p === '/api/wifi/config' && req.method === 'POST') {

@@ -340,10 +340,27 @@ static esp_err_t handle_status(httpd_req_t *req)
 	web_control_touch();
 	macplus_t *s = macplus_instance();
 	const bool inserted = (s != NULL) && mac_sony_disk_in_place(&s->sony, 1);
+	/* STA info (#2): SSID + LAN IP, so the success page can show an IP
+	 * fallback for devices that cannot resolve macnano.local. */
+	char ssid[33] = "", ip[16] = "";
+	web_control_sta_info(ssid, sizeof(ssid), ip, sizeof(ip));
+	char esc[sizeof(ssid) * 2 + 1];
+	size_t j = 0;
+	for (size_t i = 0; ssid[i] != '\0' && j < sizeof(esc) - 2; i++) {
+		if (ssid[i] == '"' || ssid[i] == '\\') {
+			esc[j++] = '\\';
+		} else if ((unsigned char)ssid[i] < 0x20) {
+			esc[j++] = '?'; /* strip control chars */
+			continue;
+		}
+		esc[j++] = ssid[i];
+	}
+	esc[j] = '\0';
 	httpd_resp_set_type(req, "application/json");
-	char buf[128];
-	snprintf(buf, sizeof(buf), "{\"floppy\":%s,\"state\":\"%s\"}",
-	         inserted ? "true" : "false", state_name(s_state));
+	char buf[192];
+	snprintf(buf, sizeof(buf),
+	         "{\"floppy\":%s,\"state\":\"%s\",\"sta\":{\"ssid\":\"%s\",\"ip\":\"%s\"}}",
+	         inserted ? "true" : "false", state_name(s_state), esc, ip);
 	return httpd_resp_send(req, buf, HTTPD_RESP_USE_STRLEN);
 }
 
@@ -592,6 +609,23 @@ static esp_err_t handle_wifi_config(httpd_req_t *req)
 	return httpd_resp_send(req, "{\"ok\":true}", HTTPD_RESP_USE_STRLEN);
 }
 
+/* POST /api/wifi/done: success page "copy & close hotspot" button — end the
+ * grace period immediately (AP off, DNS off, stay CONNECTED). */
+static void end_grace(void);
+static esp_err_t handle_wifi_done(httpd_req_t *req)
+{
+	web_control_touch();
+	if (s_state != WIFI_STATE_CONNECTED) {
+		httpd_resp_set_status(req, "409 Conflict");
+		return httpd_resp_send(req, "{\"error\":\"not_in_grace\"}", HTTPD_RESP_USE_STRLEN);
+	}
+	if (s_grace_timer != NULL)
+		esp_timer_stop(s_grace_timer);
+	end_grace();
+	httpd_resp_set_type(req, "application/json");
+	return httpd_resp_send(req, "{\"ok\":true}", HTTPD_RESP_USE_STRLEN);
+}
+
 /* httpd connection events: per-connection log so accept(23) failures can be
  * correlated with session count in the log stream. */
 /* Connection state snapshot, printed on httpd events (no timer):
@@ -700,6 +734,10 @@ static void start_http_server(void)
 	        .uri = "/api/wifi/config", .method = HTTP_POST, .handler = handle_wifi_config,
 	};
 	httpd_register_uri_handler(s_server, &uri_wifi_config);
+	static const httpd_uri_t uri_wifi_done = {
+	        .uri = "/api/wifi/done", .method = HTTP_POST, .handler = handle_wifi_done,
+	};
+	httpd_register_uri_handler(s_server, &uri_wifi_done);
 
 	ESP_LOGI(TAG, "http server ready: http://192.168.4.1");
 }
@@ -760,25 +798,47 @@ static esp_err_t ap_set_mode(wifi_mode_t mode)
 	return err;
 }
 
-/* 60s grace after first GOT_IP: AP stays up so a phone on the hotspot can
- * see the result page, then drop to STA-only (T4). Client-count hangup is
- * a P3 refinement. */
-#define WEB_GRACE_US (60u * 1000000u)
+/* 20s grace after first GOT_IP: AP stays up so a phone on the hotspot can
+ * see the success page, then drop to STA-only (T4). The success page shows
+ * a 20s countdown and a "copy & close hotspot" button (POST /api/wifi/done). */
+#define WEB_GRACE_US (20u * 1000000u)
+
+/* Atomically take ownership of the AP and DNS server: both are cleared so
+ * concurrent callers (grace timer, POST /api/wifi/done, disconnect event)
+ * are idempotent — the second caller gets NULL and does nothing. The caller
+ * must run ap_set_mode/stop_dns_server *outside* the critical section:
+ * stop_dns_server blocks waiting for its task (vTaskDelay), which must not
+ * run with interrupts disabled. */
+static dns_server_handle_t take_ap_dns(bool *ap_was_on)
+{
+	dns_server_handle_t dns;
+	taskENTER_CRITICAL(&s_ws_lock);
+	*ap_was_on = s_ap_on;
+	s_ap_on = false;
+	dns = s_dns;
+	s_dns = NULL;
+	taskEXIT_CRITICAL(&s_ws_lock);
+	return dns;
+}
+
+/* End the grace period: AP off, DNS off, stay CONNECTED (STA-only). */
+static void end_grace(void)
+{
+	if (s_state != WIFI_STATE_CONNECTED)
+		return;
+	bool ap_was_on = false;
+	dns_server_handle_t dns = take_ap_dns(&ap_was_on);
+	ESP_LOGI(TAG, "grace over -> STA-only");
+	if (ap_was_on)
+		ap_set_mode(WIFI_MODE_STA);
+	if (dns != NULL)
+		stop_dns_server(dns);
+}
 
 static void grace_timeout_cb(void *arg)
 {
 	(void)arg;
-	if (s_state != WIFI_STATE_CONNECTED)
-		return;
-	ESP_LOGI(TAG, "grace 60s over -> STA-only");
-	if (s_ap_on) {
-		if (ap_set_mode(WIFI_MODE_STA) == ESP_OK)
-			s_ap_on = false;
-	}
-	if (s_dns != NULL) {
-		stop_dns_server(s_dns);
-		s_dns = NULL;
-	}
+	end_grace();
 }
 
 static void schedule_reconnect(void);
@@ -791,14 +851,12 @@ static void enter_reconnecting(void)
 	set_state(WIFI_STATE_RECONNECTING);
 	if (s_grace_timer != NULL)
 		esp_timer_stop(s_grace_timer);
-	if (s_ap_on) {
-		if (ap_set_mode(WIFI_MODE_STA) == ESP_OK)
-			s_ap_on = false;
-	}
-	if (s_dns != NULL) {
-		stop_dns_server(s_dns);
-		s_dns = NULL;
-	}
+	bool ap_was_on = false;
+	dns_server_handle_t dns = take_ap_dns(&ap_was_on);
+	if (ap_was_on)
+		ap_set_mode(WIFI_MODE_STA);
+	if (dns != NULL)
+		stop_dns_server(dns);
 	ESP_LOGI(TAG, "reconnecting silently (AP off)");
 	schedule_reconnect();
 }

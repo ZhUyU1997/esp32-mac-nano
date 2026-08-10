@@ -30,15 +30,78 @@ function Spinner() {
   return <div className="wifi-spinner" />;
 }
 
+/* 复制工具：clipboard API 仅在 secure context（https/localhost）可用；
+ * 真机配网页是 http://IP 或 http://macnano.local（insecure context），
+ * navigator.clipboard 为 undefined → 回退 execCommand 才能复制并显示 ✓。 */
+async function copyText(text) {
+  try {
+    if (window.isSecureContext && navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch {}
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.top = '-9999px';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.focus(); /* iOS Safari needs focus for select/execCommand */
+    ta.select();
+    ta.setSelectionRange(0, ta.value.length);
+    const ok = document.execCommand('copy');
+    document.body.removeChild(ta);
+    return ok;
+  } catch {
+    return false;
+  }
+}
+
 /* 配网完成提示页（App 在 CONNECTED + 刚配网成功时渲染）：提示下一步 */
 export function SuccessView() {
+  const [ip, setIp] = useState('');
   const [copied, setCopied] = useState(false);
-  const copyUrl = async () => {
-    try {
-      await navigator.clipboard.writeText('http://macnano.local');
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    } catch {}
+  const [copiedIp, setCopiedIp] = useState(false);
+  const [countdown, setCountdown] = useState(20); /* 与设备 grace 20s 同步 */
+  const [closed, setClosed] = useState(false);
+  /* 成功页在设备 STA 已连时渲染：拉 /api/status 拿局域网 IP
+   * （IP 单播跨频段/跨系统都可用，不依赖 mDNS 解析） */
+  useEffect(() => {
+    let alive = true;
+    fetch('/api/status')
+      .then(r => r.json())
+      .then(j => { if (alive && j.sta) setIp(j.sta.ip || ''); })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, []);
+  /* 20s 倒计时：设备 grace 到点自动关热点（手机断连、WS 断） */
+  useEffect(() => {
+    const t = setInterval(() => setCountdown(c => {
+      if (c <= 1) { clearInterval(t); return 0; }
+      return c - 1;
+    }), 1000);
+    return () => clearInterval(t);
+  }, []);
+  const copyIp = async () => {
+    if (ip && (await copyText(ip))) {
+      setCopiedIp(true);
+      setTimeout(() => setCopiedIp(false), 2000);
+    }
+  };
+  /* 复制 IP + 立即关闭配网热点（设备端 POST /api/wifi/done） */
+  const copyAndClose = async () => {
+    if (!ip) return;
+    const ok = await copyText(ip);
+    setCopied(ok);
+    setTimeout(() => setCopied(false), 2000);
+    setClosed(true);
+    fetch('/api/wifi/done', { method: 'POST' }).catch(() => {});
+    /* 仅真实环境（非 localhost dev）：复制+关热点后主动关闭页面，用户直接切网
+     * （window.close 受浏览器限制：脚本未打开的窗口可能被拒——尝试无害） */
+    const isDev = ['localhost', '127.0.0.1'].includes(location.hostname);
+    if (!isDev) setTimeout(() => window.close(), 300);
   };
   return (
     <div className="wifi-center">
@@ -51,19 +114,38 @@ export function SuccessView() {
       <div className="wifi-center-title">配网完成</div>
       <p className="wifi-hint">
         设备已连接<span className="wifi-ssid-name">{lastSsid}</span>
-        <br />手机连接同一网络后，<br />浏览器打开下方地址即可控制设备
+        <br />手机连接同一网络后，<br />用下面的 IP 地址访问设备
       </p>
-      <button type="button" className="wifi-url" onClick={copyUrl}>
-        <span className="wifi-url-host">http://macnano.local</span>
-        {copied ? (
-          <span className="wifi-url-copied">已复制 ✓</span>
-        ) : (
-          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-            <rect x="9" y="9" width="11" height="11" rx="2" />
-            <path d="M5 15V5a2 2 0 0 1 2-2h10" />
-          </svg>
-        )}
-      </button>
+      {closed ? (
+        <div className="wifi-grace-msg">热点已关闭，请连接 {lastSsid} 后访问设备</div>
+      ) : (
+        ip && (
+          <button type="button" className="wifi-done" onClick={copyAndClose}>
+            <span>复制并关闭配网热点</span>
+            {copied ? <span className="wifi-url-copied">已复制 ✓</span> : null}
+          </button>
+        )
+      )}
+      {ip && (
+        <button type="button" className="wifi-ip" onClick={copyIp} aria-label="复制 IP 地址">
+          <span className="wifi-ip-host">{ip}</span>
+          {copiedIp ? (
+            <span className="wifi-url-copied">已复制 ✓</span>
+          ) : (
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+              <rect x="9" y="9" width="11" height="11" rx="2" />
+              <path d="M5 15V5a2 2 0 0 1 2-2h10" />
+            </svg>
+          )}
+        </button>
+      )}
+      {!closed && (
+        <div className="wifi-grace-count">
+          {countdown > 0
+            ? `配网热点将在 ${countdown}s 后自动关闭`
+            : `热点已自动关闭，请连接 ${lastSsid} 后访问设备`}
+        </div>
+      )}
     </div>
   );
 }

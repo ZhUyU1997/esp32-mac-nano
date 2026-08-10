@@ -25,7 +25,7 @@ wifi_state_t web_control_state(void);
 esp_err_t web_control_reprovision(void);
 
 /* Hotspot identity shown on the panel while provisioning (P4). */
-#define WEB_AP_SSID "MacNano-ESP32"
+#define WEB_AP_SSID "MacNano配网热点"
 #define WEB_AP_PASS "mac-nano"
 #define WEB_AP_IP   "192.168.4.1"
 

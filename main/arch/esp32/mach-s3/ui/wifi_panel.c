@@ -6,7 +6,7 @@
  *   OFF       hides the info rows: guide + [Provision] button only.
  *   PROVISION hotspot identity (SSID/Key/IP), no guide line — the captive
  *             portal auto-opens the config page on the connected phone.
- *   CONNECTED home SSID + LAN IP + (macnano.local).
+ *   CONNECTED home SSID + LAN IP + mDNS: macnano.local.
  *   CONNECTING/RECONNECTING home SSID, IP "-" until GOT_IP.
  *   AP_ONLY   hotspot identity (no entry point today; kept for T8).
  * Button = [Provision] on OFF, [Re-provision] otherwise, hidden while
@@ -129,11 +129,13 @@ void wifi_panel_create(lv_obj_t *screen, int32_t x, int32_t y, int32_t w, int32_
 	lv_obj_set_style_text_font(s_panel.status, panel_font(), 0);
 	lv_obj_set_pos(s_panel.status, 0, 12);
 
-	/* Two-column layout: key labels left-aligned, values left-aligned. */
+	/* Two-column layout: key labels left-aligned, values left-aligned.
+	 * Keys are dynamic per state (refresh sets rows to match vals):
+	 *   hotspot (3) / connected (4, +mDNS) / connecting, reconnecting (2). */
 	s_panel.keys = lv_label_create(s_panel.panel);
-	lv_label_set_text(s_panel.keys, "WiFi:\nKey:\nIP:");
+	lv_label_set_text(s_panel.keys, "Hotspot:\nKey:\nIP:");
 	lv_obj_set_pos(s_panel.keys, 0, 48);
-	lv_obj_set_width(s_panel.keys, 60);
+	lv_obj_set_width(s_panel.keys, 90); /* fits "Hotspot:" (8 chars, mono) */
 	lv_label_set_long_mode(s_panel.keys, LV_LABEL_LONG_WRAP);
 	lv_obj_set_style_text_color(s_panel.keys, lv_color_black(), 0);
 	lv_obj_set_style_text_font(s_panel.keys, panel_font(), 0);
@@ -141,7 +143,7 @@ void wifi_panel_create(lv_obj_t *screen, int32_t x, int32_t y, int32_t w, int32_
 	lv_obj_set_style_text_line_space(s_panel.keys, 6, 0);
 
 	s_panel.vals = lv_label_create(s_panel.panel);
-	lv_obj_set_pos(s_panel.vals, 70, 48);
+	lv_obj_set_pos(s_panel.vals, 92, 48);
 	lv_obj_set_width(s_panel.vals, lv_pct(100));
 	lv_label_set_long_mode(s_panel.vals, LV_LABEL_LONG_WRAP);
 	lv_obj_set_style_text_color(s_panel.vals, lv_color_black(), 0);
@@ -212,6 +214,22 @@ static void wifi_panel_timer_cb(lv_timer_t *t)
 	wifi_panel_refresh();
 }
 
+/* Panel font is ASCII-only (--range 32-127): show the hotspot SSID's ASCII
+ * prefix ("MacNano…") so Chinese SSID bytes don't render as garbage. */
+static void ascii_prefix(const char *in, char *out, size_t out_len)
+{
+	size_t j = 0;
+	for (size_t i = 0; in[i] != '\0' && j + 2 < out_len; i++) {
+		const unsigned char c = (unsigned char)in[i];
+		if (c >= 0x80) { /* non-ASCII: truncate */
+			strcpy(out + j, "...");
+			return;
+		}
+		out[j++] = (char)c;
+	}
+	out[j] = '\0';
+}
+
 void wifi_panel_refresh(void)
 {
 	if (s_panel.panel == NULL)
@@ -246,14 +264,26 @@ void wifi_panel_refresh(void)
 		lv_obj_clear_flag(s_panel.keys, LV_OBJ_FLAG_HIDDEN);
 		lv_obj_clear_flag(s_panel.vals, LV_OBJ_FLAG_HIDDEN);
 		if (st == WIFI_STATE_PROVISIONING || st == WIFI_STATE_AP_ONLY) {
-			lv_label_set_text(s_panel.vals,
-			                  WEB_AP_SSID "\n" WEB_AP_PASS "\n" WEB_AP_IP);
-		} else {
+			/* hotspot info: SSID / key / AP IP (3 rows) */
+			lv_label_set_text(s_panel.keys, "Hotspot:\nKey:\nIP:");
+			char ap_ssid[40];
+			ascii_prefix(WEB_AP_SSID, ap_ssid, sizeof(ap_ssid));
 			char buf[96];
-			snprintf(buf, sizeof(buf), "%s\n-\n%s%s",
+			snprintf(buf, sizeof(buf), "%s\n" WEB_AP_PASS "\n" WEB_AP_IP, ap_ssid);
+			lv_label_set_text(s_panel.vals, buf);
+		} else if (st == WIFI_STATE_CONNECTED) {
+			/* connected: LAN IP + mDNS name (4 rows) */
+			lv_label_set_text(s_panel.keys, "WiFi:\nKey:\nIP:\nmDNS:");
+			char buf[96];
+			snprintf(buf, sizeof(buf), "%s\n-\n%s\nmacnano.local",
 			         sta_ssid[0] ? sta_ssid : "-",
-			         sta_ip[0] ? sta_ip : "-",
-			         st == WIFI_STATE_CONNECTED ? "\n(macnano.local)" : "");
+			         sta_ip[0] ? sta_ip : "-");
+			lv_label_set_text(s_panel.vals, buf);
+		} else {
+			/* connecting / reconnecting: no IP/mDNS rows until connected */
+			lv_label_set_text(s_panel.keys, "WiFi:\nKey:");
+			char buf[96];
+			snprintf(buf, sizeof(buf), "%s\n-", sta_ssid[0] ? sta_ssid : "-");
 			lv_label_set_text(s_panel.vals, buf);
 		}
 	}
