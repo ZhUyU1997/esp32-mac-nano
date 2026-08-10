@@ -7,11 +7,13 @@
 
 #include "esp_timer.h"
 #include "esp_system.h"
+#include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "framebuffer.h"
 #include "input.h"
 #include "wifi_panel.h"
+#include "web-control.h"
 #include "video/frame_blit.h"
 #include "blit_worker.h"
 #include "ui.h"
@@ -31,6 +33,7 @@ struct ui_s {
 	bool mouse_left;
 	lv_obj_t *cursor;
 	bool pause_exit_request;
+	bool pause_active;   /* pause menu is up (ui_pause_enter/leave) */
 };
 
 static const uint8_t k_cursor_a1_data[] = {
@@ -266,9 +269,98 @@ static void FAST_FUNC_ATTR FAST_O3_ATTR mach_s3_lvgl_flush_cb(lv_display_t *disp
 /* Keypad indev: consumes all key events from the shared input queue and
  * maps them to LVGL keys (sent to the focused group object).
  * The pointer indev skips key events (see mach_s3_lvgl_mouse_read_cb). */
+/* ------------------------------------------------------------------ */
+/* Generic key-hold recognizer (UI layer).                             */
+/*                                                                      */
+/* Every key in the input stream gets hold tracking. Thresholds produce */
+/* HOLD_HINT (500ms) / LONG_PRESS (1500ms) semantic events, dispatched  */
+/* like ordinary key events (no key is special-cased here). Time base   */
+/* is lv_tick_get() (LVGL abstraction, platform-independent).          */
+/* ------------------------------------------------------------------ */
+#define KEY_HOLD_HINT_MS   500
+#define KEY_LONG_PRESS_MS  1500
+
+typedef enum {
+	KEY_HOLD_NONE = 0,
+	KEY_HOLD_SHORT_PRESS, /* released before 500ms */
+	KEY_HOLD_LONG_PRESS,   /* held >= 1500ms */
+} key_hold_evt_t;
+
+/* Active hold set: only currently-held keys occupy a slot (rarely more
+ * than one or two), so a small fixed table is enough (48B vs per-key
+ * array sized by the whole keycode range). */
+typedef struct {
+	input_keycode_t code;   /* INPUT_KEY_NONE = empty slot */
+	uint32_t press_tick;    /* lv_tick at keydown */
+	bool long_press_sent;
+} key_hold_t;
+
+#define KEY_HOLD_SLOTS 4
+static key_hold_t s_hold[KEY_HOLD_SLOTS];
+
+static key_hold_t *key_hold_find(input_keycode_t code)
+{
+	for (int i = 0; i < KEY_HOLD_SLOTS; i++)
+		if (s_hold[i].code == code)
+			return &s_hold[i];
+	return NULL;
+}
+
+/* Feed a key event; returns the hold semantics of this event (release
+ * returns SHORT/LONG, press returns NONE). Released between 500ms and
+ * 1500ms has no semantic (menu stays open). */
+static key_hold_evt_t key_hold_on_key(input_keycode_t code, bool pressed)
+{
+	if (pressed) {
+		key_hold_t *h = key_hold_find(code);
+		if (h == NULL) {
+			/* new press: claim the first empty slot */
+			for (int i = 0; i < KEY_HOLD_SLOTS; i++) {
+				if (s_hold[i].code == INPUT_KEY_NONE) {
+					h = &s_hold[i];
+					break;
+				}
+			}
+			if (h == NULL)
+				return KEY_HOLD_NONE; /* table full: ignore (unlikely) */
+		}
+		h->code = code;
+		h->press_tick = lv_tick_get();
+		h->long_press_sent = false;
+		return KEY_HOLD_NONE;
+	}
+	key_hold_t *h = key_hold_find(code);
+	if (h == NULL)
+		return KEY_HOLD_NONE;
+	const uint32_t held_ms = (uint32_t)(lv_tick_get() - h->press_tick);
+	const bool was_long = h->long_press_sent;
+	h->code = INPUT_KEY_NONE; /* release: free the slot */
+	if (was_long)
+		return KEY_HOLD_LONG_PRESS; /* released after long press fired */
+	if (held_ms < KEY_HOLD_HINT_MS)
+		return KEY_HOLD_SHORT_PRESS;
+	return KEY_HOLD_NONE;
+}
+
+/* Scan one held key; emit at most one event per threshold crossing. */
+static key_hold_evt_t key_hold_poll(key_hold_t *h)
+{
+	const uint32_t held_ms = (uint32_t)(lv_tick_get() - h->press_tick);
+	if (!h->long_press_sent && held_ms >= KEY_LONG_PRESS_MS) {
+		h->long_press_sent = true;
+		return KEY_HOLD_LONG_PRESS;
+	}
+	return KEY_HOLD_NONE;
+}
+
+/* F12 was pressed while the pause menu was already up: only a short press
+ * release then exits the menu (a long press = provisioning keeps it open,
+ * and a press that opened the menu must not exit it on release). */
+static bool s_f12_press_in_menu;
+
 static void mach_s3_lvgl_keypad_read_cb(lv_indev_t *indev, lv_indev_data_t *data)
 {
-	(void)indev;
+	ui_t *ctx = (ui_t *)lv_indev_get_user_data(indev);
 	assert(data != NULL);
 
 	data->state = LV_INDEV_STATE_RELEASED;
@@ -277,14 +369,30 @@ static void mach_s3_lvgl_keypad_read_cb(lv_indev_t *indev, lv_indev_data_t *data
 	input_evt_t evt;
 	if (input_peek(&evt) && evt.kind == INPUT_EVT_KEY) {
 		input_pop(&evt);
+		const key_hold_evt_t hold = key_hold_on_key(evt.u.key.code, evt.u.key.value);
 		if (evt.u.key.code == INPUT_KEY_F12) {
+			if (evt.u.key.value) {
+				s_f12_press_in_menu = (ctx != NULL) && ctx->pause_active;
+			} else if (hold == KEY_HOLD_SHORT_PRESS && s_f12_press_in_menu) {
+				/* short press inside the pause menu exits it */
+				if (ctx != NULL)
+					ctx->pause_exit_request = true;
+			}
 			data->state = evt.u.key.value ? LV_INDEV_STATE_PRESSED : LV_INDEV_STATE_RELEASED;
 			data->key = LV_KEY_ESC;
 		} else if (evt.u.key.code == INPUT_KEY_F4 && evt.u.key.value) {
-			/* three-way switch left (F4) = WiFi off */
+			/* three-way switch left (F4) = WiFi off. One branch only: an
+			 * else-if chain would swallow the second F4 match (ESC came
+			 * first) — wifi off was dead code. (ESC removed: no consumer;
+			 * F12 keeps its ESC.) */
+			data->state = LV_INDEV_STATE_PRESSED;
 			wifi_panel_set_enabled(false);
 		} else if (evt.u.key.code == INPUT_KEY_F5 && evt.u.key.value) {
-			/* three-way switch right (F5) = WiFi on */
+			/* three-way switch right (F5) = WiFi on. WiFi is only switched
+			 * on/off here — never provisions and never disturbs the
+			 * connected state (P4); provisioning is long-press F12 / panel
+			 * button only. */
+			data->state = LV_INDEV_STATE_PRESSED;
 			wifi_panel_set_enabled(true);
 		} else {
 			data->state = evt.u.key.value ? LV_INDEV_STATE_PRESSED : LV_INDEV_STATE_RELEASED;
@@ -296,19 +404,29 @@ static void mach_s3_lvgl_keypad_read_cb(lv_indev_t *indev, lv_indev_data_t *data
 			}
 		}
 	}
-}
 
-/* F12 press (short press) on the focused target exits the pause menu. */
-static void on_f12_focus_key(lv_event_t *e)
-{
-	ui_t *ctx = (ui_t *)lv_event_get_user_data(e);
-	lv_event_code_t code = lv_event_get_code(e);
-	if (ctx != NULL && code == LV_EVENT_KEY) {
-		if (lv_indev_get_key(lv_indev_active()) == LV_KEY_ESC) {
-			ctx->pause_exit_request = true;
+	/* Hold scanning runs every frame (indev read is periodic even without
+	 * new events); dispatch like ordinary key events. */
+	for (int i = 0; i < KEY_HOLD_SLOTS; i++) {
+		if (s_hold[i].code == INPUT_KEY_NONE)
+			continue;
+		switch (key_hold_poll(&s_hold[i])) {
+		case KEY_HOLD_LONG_PRESS:
+			if (s_hold[i].code == INPUT_KEY_F12) {
+				ESP_LOGW("lvgl", "F12 long press -> provisioning");
+				web_control_reprovision();
+			}
+			break;
+		default:
+			break;
 		}
 	}
 }
+
+/* F12 (ESC) key events were previously consumed here to exit the pause
+ * menu on press; exit is now decided by the key-hold recognizer on release
+ * (short press only), so the long-press (provisioning) flow keeps the menu
+ * open. The hidden target stays as the group focus object. */
 
 static void ui_setup_keypad(ui_t *ctx)
 {
@@ -330,7 +448,6 @@ static void ui_setup_keypad(ui_t *ctx)
 	lv_obj_set_size(target, 1, 1);
 	lv_obj_clear_flag(target, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
 	lv_obj_add_flag(target, LV_OBJ_FLAG_IGNORE_LAYOUT);
-	lv_obj_add_event_cb(target, on_f12_focus_key, LV_EVENT_KEY, ctx);
 	lv_group_add_obj(ctx->group, target);
 	lv_indev_set_group(ctx->keypad, ctx->group);
 	lv_group_focus_obj(target);
@@ -452,6 +569,7 @@ void ui_pause_enter(ui_t *ui)
 {
 	assert(ui != NULL);
 	ui->pause_exit_request = false;
+	ui->pause_active = true;
 
 	mach_s3_settings_ui_show();
 }
@@ -460,6 +578,7 @@ void ui_pause_leave(ui_t *ui)
 {
 	assert(ui != NULL);
 	ui->pause_exit_request = false;
+	ui->pause_active = false;
 }
 
 bool ui_pause_take_exit_request(ui_t *ui)

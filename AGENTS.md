@@ -99,6 +99,9 @@ ESP32-S3 固件，多平台 Macintosh Plus 模拟器。详见 [PROJECT.md](PROJE
 - **立刻删除** — 别留着"以防万一"。
 - 每次 plan 变更后自查 diff：每行改动都必须服务于当前设计。
 
+## Code comments — 注释语言
+代码注释一律英文。
+
 ## Build — 构建
 
 ```bash

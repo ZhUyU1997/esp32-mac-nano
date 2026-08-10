@@ -26,6 +26,22 @@ bool mach_s3_settings_persist_get_sound_mute(bool *out_muted);
 bool mach_s3_settings_persist_set_flash_mode(bool enabled);
 bool mach_s3_settings_persist_get_flash_mode(bool *out_enabled);
 
+/* Persistent "provisioning in progress" flag: set on long-press entry,
+ * cleared on successful connect — so a reboot during provisioning stays in
+ * provisioning mode (no auto-connect) instead of blindly reconnecting. */
+bool mach_s3_settings_persist_set_provisioning(bool enabled);
+bool mach_s3_settings_persist_get_provisioning(bool *out_enabled);
+
+/* WiFi credentials (STA home network). wifi_pass supports open networks
+ * (empty string is a legal value; the store distinguishes key-missing from
+ * empty — see the dedicated set/get in settings_persist.c). */
+bool mach_s3_settings_persist_set_wifi_ssid(const char *ssid);
+bool mach_s3_settings_persist_get_wifi_ssid(char *out_ssid, size_t out_len);
+bool mach_s3_settings_persist_clear_wifi_ssid(void);
+bool mach_s3_settings_persist_set_wifi_pass(const char *pass);
+bool mach_s3_settings_persist_get_wifi_pass(char *out_pass, size_t out_len);
+bool mach_s3_settings_persist_clear_wifi_pass(void);
+
 bool mach_s3_settings_persist_set_pram_vol(uint8_t vol);
 bool mach_s3_settings_persist_get_pram_vol(uint8_t *out_vol);
 

@@ -13,6 +13,16 @@ export const upBusy = signal(false);
 export const upTxt = signal('');
 export const shotBusy = signal(false);
 
+/* WiFi state machine (device pushes 0x09 on change; routes the page to
+ * the provisioning form while PROVISIONING/CONNECTING). */
+export const wifiState = signal(null);
+
+/* 配网完成标记：提交 config 成功置位；CONNECTED 时显示"配网完成"提示页
+ * （页面重载后复位 → 正常直连/刷新不再显示提示）。 */
+export const wifiProvisioned = signal(false);
+
+const WIFI_STATES = ['OFF', 'PROVISIONING', 'CONNECTING', 'CONNECTED', 'RECONNECTING', 'AP_ONLY'];
+
 /* ── WebSocket protocol layer (moved verbatim from original main.js) ── */
 const MOD = { 0xe0: 0x01, 0xe1: 0x02, 0xe2: 0x04, 0xe3: 0x08, 0xe5: 0x20 }; /* ctrl shift alt gui rshift */
 
@@ -53,6 +63,12 @@ export function connect() {
   ws.onmessage = e => {
     const f = new Uint8Array(e.data);
     if (f[0] === 0x05) handleStatusFrame(f);
+    else if (f[0] === 0x09) {   /* wifi state push: [0x09, state, fail_reason] */
+      wifiState.value = {
+        state: WIFI_STATES[f[1]] || 'OFF',
+        reason: f[2] || 0,   /* 0=无 1=密码错误 2=找不到网络 3=其他 */
+      };
+    }
   };
   ws.onclose = () => {
     connected.value = false;

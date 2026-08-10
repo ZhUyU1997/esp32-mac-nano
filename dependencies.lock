@@ -54,6 +54,16 @@ dependencies:
     - esp32s3
     - esp32p4
     version: 1.1.5
+  espressif/mdns:
+    component_hash: e81ca7a7f53ea34e78274df054da692c272e1315572876b237b1748e267c013b
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=5.0'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 1.11.3
   espressif/ramfs:
     component_hash: 0d78f5f369d900ea3012886898589735861b69b316b8a7ac2c5a0f14da5cde6d
     dependencies:
@@ -102,10 +112,11 @@ dependencies:
 direct_dependencies:
 - espressif/esp_lcd_panel_io_additions
 - espressif/esp_lcd_st7701
+- espressif/mdns
 - espressif/ramfs
 - espressif/usb_host_hid
 - idf
 - lvgl/lvgl
-manifest_hash: 7b8e9662060b607d3b1c7fd4a2504df40ef0511d5dddaae4f5834fe242f6a4ee
+manifest_hash: f8861a19926ad9231ea97178cce8c13611af47437f0ce8adc5f8a800e6e963ee
 target: esp32s3
 version: 2.0.0

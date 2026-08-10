@@ -4,7 +4,8 @@ import { Touchpad } from './touchpad.jsx';
 import { Keyboard } from './keyboard.jsx';
 import { FloppyRow } from './floppy.jsx';
 import { ScreenshotModal } from './screenshot.jsx';
-import { sendSysKey, sendFlashMode, sendReboot, dotColor, statusText, floppyOn, floppyTitle, toastMsg, toastErr, showToast } from './store.js';
+import { sendSysKey, sendFlashMode, sendReboot, dotColor, statusText, floppyOn, floppyTitle, toastMsg, toastErr, showToast, wifiState, wifiProvisioned } from './store.js';
+import { ProvisionView, SuccessView } from './wifi.jsx';
 
 /* Fullscreen (Android Edge/Chrome support Fullscreen API; iOS doesn't → prompt to use Add to Home Screen) */
 function FullscreenBtn() {
@@ -115,10 +116,44 @@ function Toast() {
 }
 
 export function App() {
+  /* 配网路由：纯配网界面（无遥控、无关闭）；状态未知显示加载页；
+   * 只有明确 CONNECTED/RECONNECTING/AP_ONLY/OFF 才渲染遥控。 */
+  const st = wifiState.value && wifiState.value.state;
+  if (st === 'PROVISIONING' || st === 'CONNECTING') {
+    /* 连接过程不切页面：CONNECTING 也留在配网页，状态在列表项内显示 */
+    return (
+      <div className="wifi-shell">
+        <ProvisionView />
+        <Toast />
+      </div>
+    );
+  }
+  if (st === 'CONNECTED' && wifiProvisioned.value) {
+    /* 刚配网成功：显示"配网完成"提示（手机需切回路由器 WiFi 才能访问设备） */
+    return (
+      <div className="wifi-shell">
+        <SuccessView />
+        <Toast />
+      </div>
+    );
+  }
+  if (!st) {
+    /* WS 未同步（页面刚打开 / 断线）：加载页，不渲染遥控也不渲染配网 */
+    return (
+      <div className="wifi-shell">
+        <div className="wifi-center">
+          <div className="wifi-spinner" />
+          <div className="wifi-center-title">正在连接设备…</div>
+        </div>
+        <Toast />
+      </div>
+    );
+  }
+
   /* capture is a function; can't store with useState (setState(fn) would call fn as updater) — use a ref */
   const captureRef = useRef(null);
   return (
-    <>
+    <div className="remote-shell">
       <StatusBar />
       <div className="main-col">
         <div className="panel padwrap"><Touchpad /></div>
@@ -130,6 +165,6 @@ export function App() {
       </div>
       <Toast />
       <ScreenshotModal onReady={fn => { captureRef.current = fn; }} />
-    </>
+    </div>
   );
 }

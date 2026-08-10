@@ -29,6 +29,26 @@ const json = (res: any, obj: unknown) => {
   res.end(JSON.stringify(obj));
 };
 
+/* ── WiFi provisioning mock ──
+ * /api/wifi/scan: 交替 scanning → AP 列表（每次刷新先转一圈）
+ * /api/wifi/config: 提交后 3s 推 CONNECTING，再 3s 推 CONNECTED；密码 "123" 模拟失败回 PROVISIONING */
+const WIFI = { PROVISIONING: 1, CONNECTING: 2, CONNECTED: 3 } as const;
+const AP_LIST = [
+  { ssid: '邻居家WiFi', rssi: -62, auth: 4 },
+  { ssid: 'cafe_free', rssi: -77, auth: 0 },
+  { ssid: 'Test-2.4G', rssi: -58, auth: 3 },
+];
+let wifiState: number = WIFI.PROVISIONING;
+let failReason = 0; /* 0=无 1=密码错误 2=找不到网络 3=其他 */
+let scanDone = false;
+const wsClients = new Set<WebSocket>();
+function broadcastWifi(st: number, reason = 0) {
+  wifiState = st;
+  failReason = reason;
+  const buf = Buffer.from([0x09, st, reason]);
+  for (const ws of wsClients) ws.send(buf);
+}
+
 // mock API middleware + WebSocket (logic from original server.ts)
 function mockApi(): Plugin {
   const api = (req: any, res: any, next: () => void) => {
@@ -48,6 +68,32 @@ function mockApi(): Plugin {
       });
       return;
     }
+    if (p === '/api/wifi/scan') {
+      if (!scanDone) { scanDone = true; return json(res, { scanning: true }); }
+      scanDone = false;
+      return json(res, AP_LIST);
+    }
+    if (p === '/api/wifi/reset') {
+      /* dev 工具：重置回配网状态（重启 dev server 或手动调用） */
+      wifiState = WIFI.PROVISIONING;
+      failReason = 0;
+      scanDone = false;
+      return json(res, { ok: true });
+    }
+    if (p === '/api/wifi/config' && req.method === 'POST') {
+      let body = '';
+      req.on('data', (c: Buffer) => (body += c));
+      req.on('end', () => {
+        let ssid = '', pass = '';
+        try { ({ ssid, pass } = JSON.parse(body)); } catch {}
+        console.log(`[mock] POST /api/wifi/config ssid=${ssid} pass=${pass}`);
+        json(res, { ok: true });
+        setTimeout(() => broadcastWifi(WIFI.CONNECTING), 3000);
+        if (pass === '123') setTimeout(() => broadcastWifi(WIFI.PROVISIONING, 1), 6000); /* 密码错误 */
+        else setTimeout(() => broadcastWifi(WIFI.CONNECTED, 0), 6000);
+      });
+      return;
+    }
     if (p === '/generate_204') { res.writeHead(204); res.end(); return; }
     if (p === '/hotspot-detect.html') { res.writeHead(200); res.end('<HTML><BODY>Success</BODY></HTML>'); return; }
     next();
@@ -62,6 +108,8 @@ function mockApi(): Plugin {
     });
     wss.on('connection', (ws: WebSocket) => {
       console.log('[mock] ws connected');
+      wsClients.add(ws);
+      ws.send(Buffer.from([0x09, wifiState, failReason])); /* 推当前 wifi 状态 */
       ws.on('message', data => {
         const f = new Uint8Array(data as Buffer);
         switch (f[0]) {
@@ -79,7 +127,7 @@ function mockApi(): Plugin {
           default: console.log(`[mock] frame 0x${f[0].toString(16)} len=${f.length}`);
         }
       });
-      ws.on('close', () => console.log('[mock] ws closed'));
+      ws.on('close', () => { console.log('[mock] ws closed'); wsClients.delete(ws); });
     });
   };
   return {

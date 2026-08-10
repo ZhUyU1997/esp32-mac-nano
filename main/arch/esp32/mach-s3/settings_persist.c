@@ -294,3 +294,97 @@ bool mach_s3_settings_persist_get_pram_vol(uint8_t *out_vol)
 	if (out_vol == NULL) return false;
 	return persist_get_u8(UI_SETTINGS_PRAM_VOL_KEY, out_vol);
 }
+
+#define UI_PROVISIONING_KEY "wifi_prov"
+
+bool mach_s3_settings_persist_set_provisioning(bool enabled)
+{
+	return persist_set_u8(UI_PROVISIONING_KEY, enabled ? 1u : 0u);
+}
+
+bool mach_s3_settings_persist_get_provisioning(bool *out_enabled)
+{
+	if (out_enabled == NULL) {
+		return false;
+	}
+	uint8_t value = 0;
+	if (!persist_get_u8(UI_PROVISIONING_KEY, &value)) {
+		return false;
+	}
+	*out_enabled = (value != 0u);
+	return true;
+}
+
+#define UI_WIFI_SSID_KEY "wifi_ssid"
+#define UI_WIFI_PASS_KEY "wifi_pass"
+
+bool mach_s3_settings_persist_set_wifi_ssid(const char *ssid)
+{
+	return persist_set_str(UI_WIFI_SSID_KEY, ssid);
+}
+
+bool mach_s3_settings_persist_get_wifi_ssid(char *out_ssid, size_t out_len)
+{
+	return persist_get_str(UI_WIFI_SSID_KEY, out_ssid, out_len);
+}
+
+bool mach_s3_settings_persist_clear_wifi_ssid(void)
+{
+	return persist_erase_key(UI_WIFI_SSID_KEY);
+}
+
+bool mach_s3_settings_persist_set_wifi_pass(const char *pass)
+{
+	/* An empty password is legal for open networks: this must not go
+	 * through persist_set_str (which rejects empty strings). NVS itself
+	 * supports empty strings. */
+	if (pass == NULL || !persist_init_once()) {
+		ESP_LOGW(k_tag, "set wifi_pass skipped (invalid arg or nvs not ready)");
+		return false;
+	}
+	nvs_handle_t h = 0;
+	const esp_err_t err_open = nvs_open(UI_FLOPPY_NVS_NS, NVS_READWRITE, &h);
+	if (err_open != ESP_OK) {
+		ESP_LOGE(k_tag, "nvs_open(set wifi_pass) failed: %s", esp_err_to_name(err_open));
+		return false;
+	}
+	const esp_err_t err_set = nvs_set_str(h, UI_WIFI_PASS_KEY, pass);
+	const esp_err_t err_commit = (err_set == ESP_OK) ? nvs_commit(h) : err_set;
+	nvs_close(h);
+	if (err_commit != ESP_OK) {
+		ESP_LOGE(k_tag, "set wifi_pass failed: %s", esp_err_to_name(err_commit));
+		return false;
+	}
+	ESP_LOGI(k_tag, "set wifi_pass ok (len=%u)", (unsigned)strlen(pass));
+	return true;
+}
+
+bool mach_s3_settings_persist_get_wifi_pass(char *out_pass, size_t out_len)
+{
+	/* Distinguish "key missing" (false) from "value is empty" (true,
+	 * open network): an empty value must not go through persist_get_str
+	 * (which treats empty as a miss). */
+	if (out_pass == NULL || out_len < 2 || !persist_init_once()) {
+		return false;
+	}
+	out_pass[0] = '\0';
+	nvs_handle_t h = 0;
+	const esp_err_t err_open = nvs_open(UI_FLOPPY_NVS_NS, NVS_READONLY, &h);
+	if (err_open != ESP_OK) {
+		ESP_LOGE(k_tag, "nvs_open(get wifi_pass) failed: %s", esp_err_to_name(err_open));
+		return false;
+	}
+	size_t req = out_len;
+	const esp_err_t err = nvs_get_str(h, UI_WIFI_PASS_KEY, out_pass, &req);
+	nvs_close(h);
+	if (err != ESP_OK) {
+		ESP_LOGI(k_tag, "get wifi_pass miss: %s", esp_err_to_name(err));
+		return false;
+	}
+	return true; /* empty (open network) is a legal value */
+}
+
+bool mach_s3_settings_persist_clear_wifi_pass(void)
+{
+	return persist_erase_key(UI_WIFI_PASS_KEY);
+}
