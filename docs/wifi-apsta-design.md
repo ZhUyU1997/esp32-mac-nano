@@ -212,7 +212,7 @@ CONNECTED ──断线──► RECONNECTING ──重连成功──► CONNECT
 **成功页**（宽限期，简版 + 主动关闭）：
 - 已连 SSID 展示
 - 局域网 IP（等宽大字，点击复制，✓ 确认反馈）——IP 单播跨频段/跨系统都可用，不依赖 mDNS
-- **主按钮 [复制并关闭配网热点]**：复制**局域网 IP**（✓ 反馈）→ POST /api/wifi/done → 立即关热点，按钮变绿色提示"热点已关闭，请连接 <SSID> 后访问设备"；**真实环境（非 localhost dev）额外尝试 `window.close()` 主动关闭网页**（浏览器限制：非脚本打开的窗口可能被拒——尝试无害）
+- **主按钮 [复制并关闭配网热点]**：复制**局域网 IP**（✓ 反馈）→ POST /api/wifi/done → **设备确认 ok 后才显示绿色提示"热点已关闭"**（409/网络失败时按钮保持，不误导）；真实环境（非 localhost dev）额外尝试 `window.close()` 主动关闭网页（浏览器限制：非脚本打开的窗口可能被拒——尝试无害）
 - **20s 倒计时**（与设备宽限同步）："配网热点将在 Xs 后自动关闭"，到点设备自动关 AP（手机断连、WS 断）
 - 文案：请连接家庭 WiFi 后，用下面的 IP 地址访问设备（成功页不再展示 macnano.local）
 - 复制兼容：http（insecure context）下 `navigator.clipboard` 不可用 → `copyText()` 回退 `execCommand`（textarea）
@@ -297,7 +297,7 @@ OFF（未配网）：
 
 | 端点 | 方法 | 语义 |
 |---|---|---|
-| `/api/status` | GET | 当前实现 `{floppy, state}`；#2 追加 `sta:{ssid,ip}`（成功页显示 STA IP）。设计版 `ap/err/grace/mdns` 字段未实现 |
+| `/api/status` | GET | `{floppy, state, sta}`；**仅 CONNECTED 时 `sta:{ssid,ip}`，其他状态 `sta:null`**（SSID 做 JSON 转义；设计版 `ap/err/grace/mdns` 字段未实现） |
 | `/api/wifi/scan` | GET | `{aps:[{ssid,rssi,channel,auth}]}` 按信号排序（触发非阻塞扫描；连接中返回"稍后重试"） |
 | `/api/wifi/config` | POST | `{ssid,pass}` → T5，200 表示已接受（结果走状态轮询） |
 | `/api/wifi/done` | POST | 成功页 [复制并关闭配网热点]（复制 IP + 立即结束宽限）→ T21 |
@@ -453,7 +453,7 @@ OFF（未配网）：
 | 成功页 STA IP（#2） | ✅ | build ✓（真机待验） | `/api/status` 加 `sta:{ssid,ip}`（SSID 做 JSON 转义）；SuccessView 局域网 IP 等宽大字 + 点击复制 + ✓ 确认；样式 `.wifi-ip`；固件嵌入新前端已验证 |
 | 复制对号修复（insecure context） | ✅ | build ✓（真机待验） | 真机配网页是 http://IP（insecure context），`navigator.clipboard` 为 undefined → 复制无 ✓ 反馈。修复：`copyText()` 回退 `execCommand('copy')`（textarea 方案）；playwright 验证：置 `navigator.clipboard=undefined` 后 IP/macnano.local 两按钮均显示"已复制 ✓" |
 | 成功页 20s 倒计时 + [复制并关闭配网热点] + SSID 改名 | ✅ | build + playwright ✓（真机待验） | grace 60s→20s（`end_grace()` 提取复用）；`/api/wifi/done` 端点（T21）；前端倒计时 + 主按钮（**复制 IP** ✓ + 关热点 + 绿色提示"热点已关闭"；成功页不再展示 macnano.local；真实环境尝试 window.close()）；SSID `MacNano配网热点`（UTF-8 19B），面板 `ascii_prefix()` ASCII 截断显示 MacNano…；**面板 CONNECTED 两列布局 keys/vals 行对齐：keys 加 mDNS: 标签行，vals 显示 macnano.local**；playwright 验证：按钮/倒计时/POST done/剪贴板内容 = IP 全通过 |
-| review 修复（并发竞态 + 文案） | ✅ | build ✓（真机待验） | `take_ap_dns()`：临界区内原子取走 s_ap_on/s_dns 并置空，锁外执行 set_mode/stop_dns_server——消除 grace timer / done / 断线事件三方并发导致的 DNS double-free/UAF（`stop_dns_server` 非幂等且有 vTaskDelay，不能锁内调用）；`enter_reconnecting` 同模式收口；倒计时到 0 文案改"热点已自动关闭"；`copyText` execCommand 路径补 `ta.focus()`（iOS Safari） |
+| review 修复（并发竞态 + 文案 + sta） | ✅ | build + playwright ✓（真机待验） | `take_ap_dns()`：临界区内原子取走 s_ap_on/s_dns 并置空，锁外执行 set_mode/stop_dns_server——消除 grace timer / done / 断线事件三方并发导致的 DNS double-free/UAF（`stop_dns_server` 非幂等且有 vTaskDelay，不能锁内调用）；`enter_reconnecting` 同模式收口；倒计时到 0 文案改"热点已自动关闭"；`copyText` execCommand 路径补 `ta.focus()`（iOS Safari）；**done 响应 ok 才显示"热点已关闭"（409/失败按钮保持）；`/api/status` 仅 CONNECTED 返回 `sta:{ssid,ip}`，其他状态 `sta:null`**（playwright 验证两路径：ok→已关闭 ✓ / route 409→按钮保持 ✓） |
 
 ### P3 实际范围（用户确认裁剪后）
 - ✅ 错误分流（密码错/找不到网）、行内连接状态、成功页（macnano.local + 复制）

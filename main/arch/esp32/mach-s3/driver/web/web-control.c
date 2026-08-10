@@ -340,27 +340,32 @@ static esp_err_t handle_status(httpd_req_t *req)
 	web_control_touch();
 	macplus_t *s = macplus_instance();
 	const bool inserted = (s != NULL) && mac_sony_disk_in_place(&s->sony, 1);
-	/* STA info (#2): SSID + LAN IP, so the success page can show an IP
-	 * fallback for devices that cannot resolve macnano.local. */
-	char ssid[33] = "", ip[16] = "";
-	web_control_sta_info(ssid, sizeof(ssid), ip, sizeof(ip));
-	char esc[sizeof(ssid) * 2 + 1];
-	size_t j = 0;
-	for (size_t i = 0; ssid[i] != '\0' && j < sizeof(esc) - 2; i++) {
-		if (ssid[i] == '"' || ssid[i] == '\\') {
-			esc[j++] = '\\';
-		} else if ((unsigned char)ssid[i] < 0x20) {
-			esc[j++] = '?'; /* strip control chars */
-			continue;
-		}
-		esc[j++] = ssid[i];
-	}
-	esc[j] = '\0';
 	httpd_resp_set_type(req, "application/json");
 	char buf[192];
-	snprintf(buf, sizeof(buf),
-	         "{\"floppy\":%s,\"state\":\"%s\",\"sta\":{\"ssid\":\"%s\",\"ip\":\"%s\"}}",
-	         inserted ? "true" : "false", state_name(s_state), esc, ip);
+	if (s_state == WIFI_STATE_CONNECTED) {
+		/* STA info: SSID + LAN IP, for the success page IP fallback
+		 * (only meaningful while connected; other states send null). */
+		char ssid[33] = "", ip[16] = "";
+		web_control_sta_info(ssid, sizeof(ssid), ip, sizeof(ip));
+		char esc[sizeof(ssid) * 2 + 1];
+		size_t j = 0;
+		for (size_t i = 0; ssid[i] != '\0' && j < sizeof(esc) - 2; i++) {
+			if (ssid[i] == '"' || ssid[i] == '\\') {
+				esc[j++] = '\\';
+			} else if ((unsigned char)ssid[i] < 0x20) {
+				esc[j++] = '?'; /* strip control chars */
+				continue;
+			}
+			esc[j++] = ssid[i];
+		}
+		esc[j] = '\0';
+		snprintf(buf, sizeof(buf),
+		         "{\"floppy\":%s,\"state\":\"%s\",\"sta\":{\"ssid\":\"%s\",\"ip\":\"%s\"}}",
+		         inserted ? "true" : "false", state_name(s_state), esc, ip);
+	} else {
+		snprintf(buf, sizeof(buf), "{\"floppy\":%s,\"state\":\"%s\",\"sta\":null}",
+		         inserted ? "true" : "false", state_name(s_state));
+	}
 	return httpd_resp_send(req, buf, HTTPD_RESP_USE_STRLEN);
 }
 

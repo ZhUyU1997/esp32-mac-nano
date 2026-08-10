@@ -96,8 +96,13 @@ export function SuccessView() {
     const ok = await copyText(ip);
     setCopied(ok);
     setTimeout(() => setCopied(false), 2000);
-    setClosed(true);
-    fetch('/api/wifi/done', { method: 'POST' }).catch(() => {});
+    try {
+      const r = await fetch('/api/wifi/done', { method: 'POST' });
+      if (r.ok) setClosed(true); /* 设备确认已关热点才显示"已关闭" */
+      /* 409：设备不在宽限期（如恰逢断线）——保持按钮，不误导 */
+    } catch {
+      /* 网络错误：请求可能已到达或连接已断——保守保持按钮 */
+    }
     /* 仅真实环境（非 localhost dev）：复制+关热点后主动关闭页面，用户直接切网
      * （window.close 受浏览器限制：脚本未打开的窗口可能被拒——尝试无害） */
     const isDev = ['localhost', '127.0.0.1'].includes(location.hostname);
