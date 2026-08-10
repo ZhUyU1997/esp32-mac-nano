@@ -93,7 +93,8 @@ idf_component_register(SRCS
         "../macintosh/rom.bin"
         "../macintosh/pcex/pcex_mmio.rom"
         "arch/esp32/mach-s3/dtree/mach-s3.json"
-        "../web/dist/index.html"
+        "../web/dist/index.html.gz"
+        "../web/dist/provision.html.gz"
     WHOLE_ARCHIVE
         )
 

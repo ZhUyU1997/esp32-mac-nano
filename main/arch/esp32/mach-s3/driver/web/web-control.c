@@ -40,8 +40,10 @@ static void schedule_reconnect(void);
 static void start_grace_timer(void);
 static void start_provision_timer(void);
 
-extern const uint8_t _binary_index_html_start[];
-extern const uint8_t _binary_index_html_end[];
+extern const uint8_t _binary_index_html_gz_start[];
+extern const uint8_t _binary_index_html_gz_end[];
+extern const uint8_t _binary_provision_html_gz_start[];
+extern const uint8_t _binary_provision_html_gz_end[];
 
 static httpd_handle_t s_server = NULL;
 static dns_server_handle_t s_dns = NULL;
@@ -329,10 +331,21 @@ static esp_err_t handle_ws(httpd_req_t *req)
 static esp_err_t handle_root(httpd_req_t *req)
 {
 	web_control_touch();
-	const size_t len = (size_t)(_binary_index_html_end - _binary_index_html_start);
-	ESP_LOGI(TAG, "GET / -> %u bytes", (unsigned)len);
+	/* Split pages: PROVISIONING/CONNECTING serve the standalone provision
+	 * page (pure HTTP, no WebSocket — renders in the iOS CNA WebSheet
+	 * too); other states serve the remote page. */
+	const bool provisioning =
+	        s_state == WIFI_STATE_PROVISIONING || s_state == WIFI_STATE_CONNECTING;
+	const uint8_t *page = provisioning ? _binary_provision_html_gz_start : _binary_index_html_gz_start;
+	const size_t len = provisioning
+	                           ? (size_t)(_binary_provision_html_gz_end - _binary_provision_html_gz_start)
+	                           : (size_t)(_binary_index_html_gz_end - _binary_index_html_gz_start);
+	ESP_LOGI(TAG, "GET / -> %s %u bytes (gzip)", provisioning ? "provision" : "remote", (unsigned)len);
 	httpd_resp_set_type(req, "text/html");
-	return httpd_resp_send(req, (const char *)_binary_index_html_start, len);
+	/* pages are embedded gzip-compressed; browsers/WebSheet decompress
+	 * transparently (saves ~100KB of flash) */
+	httpd_resp_set_hdr(req, "Content-Encoding", "gzip");
+	return httpd_resp_send(req, (const char *)page, len);
 }
 
 static esp_err_t handle_status(httpd_req_t *req)
@@ -360,11 +373,11 @@ static esp_err_t handle_status(httpd_req_t *req)
 		}
 		esc[j] = '\0';
 		snprintf(buf, sizeof(buf),
-		         "{\"floppy\":%s,\"state\":\"%s\",\"sta\":{\"ssid\":\"%s\",\"ip\":\"%s\"}}",
-		         inserted ? "true" : "false", state_name(s_state), esc, ip);
+		         "{\"floppy\":%s,\"state\":\"%s\",\"reason\":%d,\"sta\":{\"ssid\":\"%s\",\"ip\":\"%s\"}}",
+		         inserted ? "true" : "false", state_name(s_state), s_fail_reason, esc, ip);
 	} else {
-		snprintf(buf, sizeof(buf), "{\"floppy\":%s,\"state\":\"%s\",\"sta\":null}",
-		         inserted ? "true" : "false", state_name(s_state));
+		snprintf(buf, sizeof(buf), "{\"floppy\":%s,\"state\":\"%s\",\"reason\":%d,\"sta\":null}",
+		         inserted ? "true" : "false", state_name(s_state), s_fail_reason);
 	}
 	return httpd_resp_send(req, buf, HTTPD_RESP_USE_STRLEN);
 }
@@ -377,15 +390,25 @@ static bool probe_redirect_active(void)
 	return s_state == WIFI_STATE_PROVISIONING || s_state == WIFI_STATE_CONNECTING;
 }
 
+/* Captive-portal probe redirect: iOS detects a captive network only when
+ * the probe response carries *content* — a bare 302 is not sufficient
+ * (esp-idf captive_portal example: 303 See Other + body).
+ * Location "/" is served by handle_root, which returns the provisioning
+ * page while PROVISIONING/CONNECTING — that page is pure HTTP (no WS),
+ * so it renders inside the iOS CNA WebSheet too. */
+static esp_err_t probe_redirect(httpd_req_t *req)
+{
+	httpd_resp_set_status(req, "303 See Other");
+	httpd_resp_set_hdr(req, "Location", "/");
+	return httpd_resp_send(req, "Redirect to the captive portal", HTTPD_RESP_USE_STRLEN);
+}
+
 /* Android connectivity probe: 204 with empty body = "this network has internet". */
 static esp_err_t handle_generate_204(httpd_req_t *req)
 {
 	web_control_touch();
-	if (probe_redirect_active()) {
-		httpd_resp_set_status(req, "302 Found");
-		httpd_resp_set_hdr(req, "Location", "/");
-		return httpd_resp_send(req, NULL, 0);
-	}
+	if (probe_redirect_active())
+		return probe_redirect(req);
 	httpd_resp_set_status(req, "204 No Content");
 	return httpd_resp_send(req, NULL, 0);
 }
@@ -394,13 +417,21 @@ static esp_err_t handle_generate_204(httpd_req_t *req)
 static esp_err_t handle_hotspot_detect(httpd_req_t *req)
 {
 	web_control_touch();
-	if (probe_redirect_active()) {
-		httpd_resp_set_status(req, "302 Found");
-		httpd_resp_set_hdr(req, "Location", "/");
-		return httpd_resp_send(req, NULL, 0);
-	}
+	if (probe_redirect_active())
+		return probe_redirect(req);
 	httpd_resp_set_type(req, "text/html");
 	return httpd_resp_send(req, "<HTML><HEAD><TITLE>Success</TITLE></HEAD><BODY>Success</BODY></HTML>", HTTPD_RESP_USE_STRLEN);
+}
+
+/* 404 fallback: any other unregistered path (Apple probe variations,
+ * direct-IP access with arbitrary path) redirects to the portal too. */
+static esp_err_t http_404_redirect(httpd_req_t *req, httpd_err_code_t err)
+{
+	(void)err;
+	if (probe_redirect_active())
+		return probe_redirect(req);
+	httpd_resp_set_status(req, "404 Not Found");
+	return httpd_resp_send(req, NULL, 0);
 }
 
 /* Static assets are inlined into index.html (web/dist) — no separate embedding */
@@ -743,6 +774,7 @@ static void start_http_server(void)
 	        .uri = "/api/wifi/done", .method = HTTP_POST, .handler = handle_wifi_done,
 	};
 	httpd_register_uri_handler(s_server, &uri_wifi_done);
+	httpd_register_err_handler(s_server, HTTPD_404_NOT_FOUND, http_404_redirect);
 
 	ESP_LOGI(TAG, "http server ready: http://192.168.4.1");
 }

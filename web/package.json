@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
+    "build": "vite build && vite build --config vite.provision.config.ts && node scripts/gzip-html.mjs",
     "build:flash": "vite build --config vite.flash.config.ts",
     "preview": "vite preview"
   },

@@ -297,7 +297,7 @@ OFF（未配网）：
 
 | 端点 | 方法 | 语义 |
 |---|---|---|
-| `/api/status` | GET | `{floppy, state, sta}`；**仅 CONNECTED 时 `sta:{ssid,ip}`，其他状态 `sta:null`**（SSID 做 JSON 转义；设计版 `ap/err/grace/mdns` 字段未实现） |
+| `/api/status` | GET | `{floppy, state, reason, sta}`；**仅 CONNECTED 时 `sta:{ssid,ip}`，其他状态 `sta:null`**；`reason` = 配网失败原因（1=密码错 2=找不到网 3=其他，原只在 WS 0x09，现随状态轮询返回）（SSID 做 JSON 转义；设计版 `ap/err/grace/mdns` 字段未实现） |
 | `/api/wifi/scan` | GET | `{aps:[{ssid,rssi,channel,auth}]}` 按信号排序（触发非阻塞扫描；连接中返回"稍后重试"） |
 | `/api/wifi/config` | POST | `{ssid,pass}` → T5，200 表示已接受（结果走状态轮询） |
 | `/api/wifi/done` | POST | 成功页 [复制并关闭配网热点]（复制 IP + 立即结束宽限）→ T21 |
@@ -454,6 +454,7 @@ OFF（未配网）：
 | 复制对号修复（insecure context） | ✅ | build ✓（真机待验） | 真机配网页是 http://IP（insecure context），`navigator.clipboard` 为 undefined → 复制无 ✓ 反馈。修复：`copyText()` 回退 `execCommand('copy')`（textarea 方案）；playwright 验证：置 `navigator.clipboard=undefined` 后 IP/macnano.local 两按钮均显示"已复制 ✓" |
 | 成功页 20s 倒计时 + [复制并关闭配网热点] + SSID 改名 | ✅ | build + playwright ✓（真机待验） | grace 60s→20s（`end_grace()` 提取复用）；`/api/wifi/done` 端点（T21）；前端倒计时 + 主按钮（**复制 IP** ✓ + 关热点 + 绿色提示"热点已关闭"；成功页不再展示 macnano.local；真实环境尝试 window.close()）；SSID `MacNano配网热点`（UTF-8 19B），面板 `ascii_prefix()` ASCII 截断显示 MacNano…；**面板 CONNECTED 两列布局 keys/vals 行对齐：keys 加 mDNS: 标签行，vals 显示 macnano.local**；playwright 验证：按钮/倒计时/POST done/剪贴板内容 = IP 全通过 |
 | review 修复（并发竞态 + 文案 + sta） | ✅ | build + playwright ✓（真机待验） | `take_ap_dns()`：临界区内原子取走 s_ap_on/s_dns 并置空，锁外执行 set_mode/stop_dns_server——消除 grace timer / done / 断线事件三方并发导致的 DNS double-free/UAF（`stop_dns_server` 非幂等且有 vTaskDelay，不能锁内调用）；`enter_reconnecting` 同模式收口；倒计时到 0 文案改"热点已自动关闭"；`copyText` execCommand 路径补 `ta.focus()`（iOS Safari）；**done 响应 ok 才显示"热点已关闭"（409/失败按钮保持）；`/api/status` 仅 CONNECTED 返回 `sta:{ssid,ip}`，其他状态 `sta:null`**（playwright 验证两路径：ok→已关闭 ✓ / route 409→按钮保持 ✓） |
+| **WS 与配网切分（双页面）** | ✅ | build + playwright ✓（真机待验） | **两个完全独立的 HTML/bundle**：`provision.html`（配网页，38KB，纯 HTTP 轮询 /api/status+scan/config/done，**零 WS 零遥控代码**，iOS CNA WebSheet 可渲染）与 `index.html`（遥控页，121KB，WS 常开）；设备端 httpd `/` 按状态分发（PROVISIONING/CONNECTING → provision.html，其他 → index.html）；配网页遇 CONNECTED 非刚配完自动跳 `/`；探针 303 → `/`（内容随状态）；**两个独立 build**（vite.config.ts + vite.provision.config.ts，各自单入口完整内联——避免多入口把 jsx-runtime 拆成外部 chunk 导致设备 404 白屏/闪退）；页面 **gzip 压缩嵌入固件**（httpd `Content-Encoding: gzip`，省 ~100KB flash）；`wifi.css` 独立（配网页不打包遥控样式）；`src/provision/` 目录与遥控代码零交叉 import；playwright 验证：provision 全程 WS=0 / 遥控页 WS=1 / 状态切换自动跳转；固件 0x1ea3f0（分区余 89KB） |
 
 ### P3 实际范围（用户确认裁剪后）
 - ✅ 错误分流（密码错/找不到网）、行内连接状态、成功页（macnano.local + 复制）

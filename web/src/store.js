@@ -18,7 +18,7 @@ export const shotBusy = signal(false);
 export const wifiState = signal(null);
 
 /* 配网完成标记：提交 config 成功置位；CONNECTED 时显示"配网完成"提示页
- * （页面重载后复位 → 正常直连/刷新不再显示提示）。 */
+ * Reset on page reload (normal connect/refresh shows no hint). */
 export const wifiProvisioned = signal(false);
 
 const WIFI_STATES = ['OFF', 'PROVISIONING', 'CONNECTING', 'CONNECTED', 'RECONNECTING', 'AP_ONLY'];
@@ -38,6 +38,13 @@ function setStatus(text, color) {
 }
 
 export function isConnected() { return connected.value; }
+
+/* WS lifecycle: the remote page starts it on load (main.jsx ensureWs);
+ * the provisioning page (provision.html) never imports this module.
+ * Reconnect after background restore is handled in the visibilitychange
+ * handler below (hidden closes the socket, visible reconnects) — the
+ * remote page is the only importer of this module. */
+export function ensureWs() { connect(); }  /* connect() is idempotent */
 
 export function connect() {
   /* guard: one socket */
@@ -94,7 +101,7 @@ document.addEventListener('visibilitychange', () => {
     setStatus('已断开', '#9a9386');   /* page hidden: silent close (invisible) */
   } else {
     suppressReconnect = false;
-    connect();
+    connect(); /* reconnect after returning from background (remote page only) */
   }
 });
 

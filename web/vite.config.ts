@@ -30,9 +30,10 @@ const json = (res: any, obj: unknown) => {
 };
 
 /* ── WiFi provisioning mock ──
- * /api/wifi/scan: 交替 scanning → AP 列表（每次刷新先转一圈）
- * /api/wifi/config: 提交后 3s 推 CONNECTING，再 3s 推 CONNECTED；密码 "123" 模拟失败回 PROVISIONING */
+ * /api/wifi/scan: alternates scanning -> AP list (spins once per refresh)
+ * /api/wifi/config: pushes CONNECTING after 3s, CONNECTED after 6s; pass "123" simulates failure -> PROVISIONING */
 const WIFI = { PROVISIONING: 1, CONNECTING: 2, CONNECTED: 3 } as const;
+const STATE_NAMES = ['OFF', 'PROVISIONING', 'CONNECTING', 'CONNECTED', 'RECONNECTING', 'AP_ONLY'];
 const AP_LIST = [
   { ssid: '邻居家WiFi', rssi: -62, auth: 4 },
   { ssid: 'cafe_free', rssi: -77, auth: 0 },
@@ -54,7 +55,12 @@ function mockApi(): Plugin {
   const api = (req: any, res: any, next: () => void) => {
     const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
     const p = url.pathname;
-    if (p === '/api/status') return json(res, { floppy: false, state: 'CONNECTED', sta: { ssid: 'Test-2.4G', ip: '192.168.1.42' } });
+    if (p === '/api/status') return json(res, {
+      floppy: false,
+      state: STATE_NAMES[wifiState] || 'OFF',
+      reason: failReason,
+      sta: wifiState === WIFI.CONNECTED ? { ssid: 'Test-2.4G', ip: '192.168.1.42' } : null,
+    });
     if (p === '/api/screenshot') {
       res.writeHead(200, { 'content-type': 'application/octet-stream' });
       return res.end(FRAME);
@@ -74,7 +80,7 @@ function mockApi(): Plugin {
       return json(res, AP_LIST);
     }
     if (p === '/api/wifi/reset') {
-      /* dev 工具：重置回配网状态（重启 dev server 或手动调用） */
+      /* dev helper: reset back to provisioning state (or restart the dev server) */
       wifiState = WIFI.PROVISIONING;
       failReason = 0;
       scanDone = false;
@@ -114,7 +120,7 @@ function mockApi(): Plugin {
     wss.on('connection', (ws: WebSocket) => {
       console.log('[mock] ws connected');
       wsClients.add(ws);
-      ws.send(Buffer.from([0x09, wifiState, failReason])); /* 推当前 wifi 状态 */
+      ws.send(Buffer.from([0x09, wifiState, failReason])); /* push current wifi state */
       ws.on('message', data => {
         const f = new Uint8Array(data as Buffer);
         switch (f[0]) {
@@ -148,14 +154,19 @@ function mockApi(): Plugin {
   };
 }
 
+/* Vite config: dev = mock serve (API/WS middleware), build = two single-file
+ * pages. Each page is built independently (index.html then provision.html
+ * via vite.provision.config.ts): multi-input in one build would split the
+ * shared jsx-runtime into an external chunk that vite-plugin-singlefile
+ * cannot inline — devices would 404 that chunk and blank/crash. */
 export default defineConfig({
   root: __dirname,
-  plugins: [preact(), mockApi(), viteSingleFile()],
+  plugins: [preact(), mockApi(), viteSingleFile({ useRecommendedBuildConfig: false })],
   server: { port: 8899, strictPort: false }, // auto-pick next port if taken
   preview: { port: 8899, strictPort: false },
   build: {
     target: 'es2018',
     assetsInlineLimit: 100000000, // inline all assets (single-file fallback)
-    cssCodeSplit: false,
+    cssCodeSplit: true,
   },
 });

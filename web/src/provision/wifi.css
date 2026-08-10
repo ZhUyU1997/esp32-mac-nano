@@ -1,0 +1,89 @@
+/* WiFi provisioning UI (standalone provision.html entry):
+ * base layout + iOS Settings -> WiFi style. No remote-control styles. */
+
+* { box-sizing: border-box; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+html, body { height: 100%; }
+body { background:#f0ede6; color:#333; font-family: system-ui, sans-serif; margin:0; padding:8px; display:flex; flex-direction:column; }
+#app { display:flex; flex-direction:column; flex:1; min-height:0; }
+@keyframes spin { to { transform:rotate(360deg); } }
+/* ── WiFi provisioning UI: iOS Settings -> WiFi style (provisioning only) ── */
+.wifi-shell { flex: 1; min-height: 0; display: flex; flex-direction: column; background: #f2f2f7; margin: -8px; padding: 0; overflow-x: hidden; }
+.wifi-page { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; -webkit-user-select: none; user-select: none; }
+
+/* nav title */
+.wifi-nav { padding: 8px 20px 10px; }
+.wifi-nav h1 { font-size: 32px; font-weight: 700; letter-spacing: -0.5px; color: #000; margin: 0; }
+
+/* list header: group title + refresh button (spins while scanning) */
+.wifi-listhead { display: flex; align-items: center; justify-content: space-between; padding: 10px 8px 4px 16px; }
+.wifi-listtitle { font-size: 13px; color: #8e8e93; }
+.wifi-refresh { flex: none; width: 30px; height: 30px; display: flex; align-items: center; justify-content: center; border: 0; background: #f2f2f7; color: #007aff; border-radius: 50%; cursor: pointer; touch-action: manipulation; }
+.wifi-refresh:active { background: #e5e5ea; }
+.wifi-refresh.spin svg { animation: spin .8s linear infinite; }
+.wifi-lock { color: #8e8e93; flex: none; display: inline-flex; }
+
+/* grouped list (iOS inset grouped) */
+.wifi-group { margin: 8px 16px; background: #fff; border-radius: 12px; overflow: hidden; }
+.wifi-cell { display: flex; align-items: center; gap: 12px; width: 100%; padding: 10px 16px; border: 0; border-bottom: 1px solid #f0f0f0; background: none; font-size: 16px; text-align: left; cursor: pointer; touch-action: manipulation; }
+.wifi-cell:last-child { border-bottom: 0; }
+.wifi-cell:active { background: #f2f2f7; }
+.wifi-cell:disabled { opacity: .55; }
+.wifi-cell.connecting { background: #f5f9ff; animation: wifi-pulse 1.2s ease-in-out infinite; }
+.wifi-cell.failed { background: #fdf4f4; }
+@keyframes wifi-pulse {
+  0%, 100% { background: #f5f9ff; }
+  50% { background: #e6f0ff; }
+}
+/* signal icon: standalone left column, vertically centered in the cell */
+.wifi-signal { width: 19px; flex: none; display: flex; align-items: center; justify-content: center; align-self: center; }
+/* right content: first row network info + status row */
+.wifi-cell-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.wifi-cell-main { display: flex; align-items: center; gap: 12px; min-height: 24px; }
+.wifi-ssid { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: #000; }
+.wifi-lock { font-size: 13px; flex: none; display: inline-flex; align-items: center; justify-content: center; align-self: center; }
+/* status row */
+.wifi-cell-status { color: #007aff; font-size: 13px; flex: none; }
+.wifi-cell-status.failed { color: #ff3b30; }
+
+/* scanning / empty state */
+.wifi-scanstate { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 28px 16px; color: #8e8e93; font-size: 14px; text-align: center; line-height: 1.5; }
+
+/* footer hint */
+.wifi-foot { text-align: center; color: #8e8e93; font-size: 12px; margin: 14px 0 24px; }
+
+/* bottom sheet */
+.wifi-mask { position: fixed; inset: 0; background: rgba(0, 0, 0, .35); z-index: 100; display: flex; align-items: flex-end; }
+.wifi-sheet { background: #fff; width: 100%; border-radius: 16px 16px 0 0; padding: 18px 16px 28px; animation: wifi-sheet-up .25s ease; }
+@keyframes wifi-sheet-up { from { transform: translateY(40px); opacity: 0; } to { transform: none; opacity: 1; } }
+.wifi-sheet-title { font-size: 17px; font-weight: 600; text-align: center; margin-bottom: 16px; word-break: break-all; color: #000; }
+.wifi-sheet-row { display: flex; align-items: center; gap: 6px; background: #f2f2f7; border-radius: 10px; padding: 2px 6px; margin-bottom: 12px; }
+.wifi-sheet-row label { color: #8e8e93; font-size: 15px; margin-left: 8px; flex: none; }
+.wifi-sheet-row input { flex: 1; min-width: 0; border: 0; background: none; font-size: 16px; padding: 10px 4px; outline: none; color: #000; -webkit-user-select: text; user-select: text; }
+.wifi-eye { flex: none; width: 34px; height: 34px; display: flex; align-items: center; justify-content: center; border: 0; background: none; color: #8e8e93; cursor: pointer; border-radius: 8px; touch-action: manipulation; }
+.wifi-eye:active { background: #e5e5ea; }
+.wifi-sheet-err { color: #ff3b30; font-size: 14px; text-align: center; margin-bottom: 12px; }
+.wifi-sheet-actions { display: flex; gap: 10px; }
+.wifi-sheet-btn { flex: 1; padding: 12px; border: 0; border-radius: 10px; font-size: 16px; cursor: pointer; touch-action: manipulation; }
+.wifi-sheet-btn.cancel { background: #f2f2f7; color: #007aff; }
+.wifi-sheet-btn.cancel:active { background: #e5e5ea; }
+.wifi-sheet-btn.conn { background: #007aff; color: #fff; font-weight: 600; }
+.wifi-sheet-btn.conn:active { background: #0a68d6; }
+.wifi-sheet-btn.conn:disabled { background: #a9cdf3; cursor: default; }
+
+/* spinner / centered transition */
+.wifi-spinner { width: 24px; height: 24px; border: 2.5px solid rgba(0, 0, 0, .14); border-top-color: #007aff; border-radius: 50%; animation: spin .7s linear infinite; flex: none; }
+.wifi-center { flex: 1; min-height: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; padding: 0 24px; }
+.wifi-center-title { font-size: 17px; font-weight: 600; color: #000; }
+.wifi-center .wifi-hint { color: #8e8e93; font-size: 13px; margin: 0; line-height: 1.6; text-align: center; }
+.wifi-ssid-name { color: #000; font-weight: 600; margin: 0 2px; }
+.wifi-success-ico { color: #34c759; display: flex; }
+/* success page: address copy button */
+.wifi-url-copied { font-size: 13px; color: #34c759; font-weight: 500; }
+.wifi-ip { display: flex; align-items: center; gap: 6px; border: 0; background: #f2f2f7; border-radius: 8px; padding: 10px 16px; cursor: pointer; color: #007aff; touch-action: manipulation; }
+.wifi-ip:active { background: #e5e5ea; }
+.wifi-ip-host { font-size: 24px; font-weight: 600; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; letter-spacing: 1px; }
+.wifi-done { display: flex; align-items: center; gap: 8px; border: 0; background: #007aff; color: #fff; border-radius: 10px; padding: 12px 20px; font-size: 16px; font-weight: 600; cursor: pointer; touch-action: manipulation; }
+.wifi-done:active { background: #0066d6; }
+.wifi-done .wifi-url-copied { color: #fff; }
+.wifi-grace-count { color: #8e8e93; font-size: 12px; }
+.wifi-grace-msg { color: #34c759; font-size: 13px; font-weight: 500; text-align: center; }
