@@ -13,15 +13,9 @@ export const upBusy = signal(false);
 export const upTxt = signal('');
 export const shotBusy = signal(false);
 
-/* WiFi state machine (device pushes 0x09 on change; routes the page to
- * the provisioning form while PROVISIONING/CONNECTING). */
-export const wifiState = signal(null);
-
 /* 配网完成标记：提交 config 成功置位；CONNECTED 时显示"配网完成"提示页
  * Reset on page reload (normal connect/refresh shows no hint). */
 export const wifiProvisioned = signal(false);
-
-const WIFI_STATES = ['OFF', 'PROVISIONING', 'CONNECTING', 'CONNECTED', 'RECONNECTING', 'AP_ONLY'];
 
 /* ── WebSocket protocol layer (moved verbatim from original main.js) ── */
 const MOD = { 0xe0: 0x01, 0xe1: 0x02, 0xe2: 0x04, 0xe3: 0x08, 0xe5: 0x20 }; /* ctrl shift alt gui rshift */
@@ -63,19 +57,17 @@ export function connect() {
     mod = 0; keys.clear();
     capsLocked.value = false;
     connected.value = true;
+    lastStatusReply = Date.now();   /* start a fresh heartbeat window — the old
+                                     * value would kill a just-reconnected socket */
     sendKb();
     setStatus('已连接', '#4caf50');
     sendQuery(0x01);   /* initial state sync */
   };
   ws.onmessage = e => {
     const f = new Uint8Array(e.data);
-    if (f[0] === 0x05) handleStatusFrame(f);
-    else if (f[0] === 0x09) {   /* wifi state push: [0x09, state, fail_reason] */
-      wifiState.value = {
-        state: WIFI_STATES[f[1]] || 'OFF',
-        reason: f[2] || 0,   /* 0=无 1=密码错误 2=找不到网络 3=其他 */
-      };
-    }
+    if (f[0] === 0x05) { lastStatusReply = Date.now(); handleStatusFrame(f); }
+    /* wifi state (0x09) is not handled here — the provisioning page polls
+     * /api/status; this module is remote-control only */
   };
   ws.onclose = () => {
     connected.value = false;
@@ -138,6 +130,16 @@ export function sendMouseBtn(b, v) {
   ws.send(f.buffer);
 }
 
+/* Click semantics: the C side guarantees the press duration (down +
+ * delayed release) so taps register even when WS delivery jitter
+ * compresses the frames. Drag hold/release still uses sendMouseBtn. */
+export function sendClick() {
+  if (!ws || ws.readyState !== 1) return;
+  const f = new Uint8Array(1);
+  f[0] = 0x0A;
+  ws.send(f.buffer);
+}
+
 export function sendSysKey(code, down) {
   if (!ws || ws.readyState !== 1) return;
   const f = new Uint8Array(4);
@@ -178,6 +180,35 @@ function handleStatusFrame(f) {
     floppyTitle.value = ins ? '软盘：已插入' : '软盘：未插入';
   }
 }
+
+/* App-level heartbeat: the device answers status queries (0x06 -> 0x05)
+ * every 2s. If no reply for HEARTBEAT_TIMEOUT_MS the link is dead (device
+ * rebooting / flashing / crashed) even though TCP hasn't noticed —
+ * force-close the socket so the status bar flips to "disconnected" and
+ * reconnects promptly instead of staying "connected" on a half-open link. */
+const HEARTBEAT_TIMEOUT_MS = 2000;
+let lastStatusReply = Date.now();
+setInterval(() => {
+  /* Only when the socket is actually open: during reconnect (CONNECTING)
+   * there is no 0x05 reply by definition — the heartbeat must not keep
+   * firing on the stale lastStatusReply or it kills every reconnect. */
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  if (Date.now() - lastStatusReply > HEARTBEAT_TIMEOUT_MS) {
+    /* Update the status bar synchronously: ws.close() may not reliably
+     * fire onclose (e.g. a dead device leaves a half-open socket), so
+     * relying on onclose left the bar stuck on "已连接". */
+    connected.value = false;
+    setStatus('已断开，重连中…', '#f44336');
+    if (ws) {
+      ws.onopen = ws.onmessage = ws.onclose = ws.onerror = null;
+      try { ws.close(); } catch (e) {}
+      ws = null;
+    }
+    if (!suppressReconnect) {
+      reconnectTimer = setTimeout(connect, 1000);
+    }
+  }
+}, 2000);
 
 /* ── toast ── */
 let toastTimer = null;

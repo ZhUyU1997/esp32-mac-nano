@@ -1,9 +1,9 @@
 import { useEffect, useRef } from 'preact/hooks';
-import { sendMouseMove, sendMouseBtn } from './store.js';
+import { sendMouseMove, sendMouseBtn, sendClick } from './store.js';
 
-const TAP_MOVE_PX = 25;   /* finger jitter tolerance for tap detection */
-const TAP_MAX_MS = 400;   /* touch must be quick to count as a tap */
-const DRAG_HOLD_MS = 250;
+const TAP_MOVE_PX = 30;   /* finger jitter tolerance for tap detection */
+const DRAG_HOLD_MS = 250;  /* hold to start dragging (also the tap window —
+                            * matches Guacamole's clickTimingThreshold) */
 
 /* touchpad: slide=move, tap=left click, hold+slide=drag
  * Gesture area uses native addEventListener (lowercase event names) to bypass Preact's
@@ -13,7 +13,7 @@ const DRAG_HOLD_MS = 250;
 export function Touchpad() {
   const padRef = useRef(null);
   const hintRef = useRef(null);
-  const st = useRef({ px: 0, py: 0, sx: 0, sy: 0, moved: false, dragging: false, longPressTimer: null, t0: 0 });
+  const st = useRef({ px: 0, py: 0, sx: 0, sy: 0, moved: false, dragging: false, longPressTimer: null });
 
   useEffect(() => {
     const pad = padRef.current;
@@ -24,7 +24,6 @@ export function Touchpad() {
       const t = e.changedTouches[0];
       st.current.sx = st.current.px = t.clientX;
       st.current.sy = st.current.py = t.clientY;
-      st.current.t0 = Date.now();
       st.current.moved = false; st.current.dragging = false;
       st.current.longPressTimer = setTimeout(() => {
         st.current.longPressTimer = null;
@@ -36,17 +35,24 @@ export function Touchpad() {
       const t = e.changedTouches[0];
       const dx = t.clientX - st.current.px, dy = t.clientY - st.current.py;
       st.current.px = t.clientX; st.current.py = t.clientY;
-      if (Math.abs(t.clientX - st.current.sx) + Math.abs(t.clientY - st.current.sy) > TAP_MOVE_PX) st.current.moved = true;
+      /* Only send mouse moves once the gesture is confirmed as a swipe/
+       * drag: tap jitter (contact drift under the threshold) would otherwise
+       * move the Mac cursor and interfere with the click that follows. */
+      const overThreshold = Math.abs(t.clientX - st.current.sx) + Math.abs(t.clientY - st.current.sy) > TAP_MOVE_PX;
+      if (st.current.moved || overThreshold) {
+        st.current.moved = true;
+        sendMouseMove(dx, dy);
+      }
       if (st.current.moved && st.current.longPressTimer) { clearTimeout(st.current.longPressTimer); st.current.longPressTimer = null; }
-      sendMouseMove(dx, dy);
     };
     const onEnd = e => {
       e.preventDefault();
       if (st.current.longPressTimer) { clearTimeout(st.current.longPressTimer); st.current.longPressTimer = null; }
       if (st.current.dragging) { st.current.dragging = false; sendMouseBtn(0, 0); }
-      else if (!st.current.moved && Date.now() - st.current.t0 < TAP_MAX_MS) {
-        sendMouseBtn(0, 1);
-        setTimeout(() => sendMouseBtn(0, 0), 40);  /* real-click rhythm */
+      else if (!st.current.moved) {
+        /* click semantics: the device guarantees the press duration —
+         * no local down/up timing to tune or fight WS jitter with */
+        sendClick();
       }
     };
     pad.addEventListener('touchstart', onStart, { passive: false });

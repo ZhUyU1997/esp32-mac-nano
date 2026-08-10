@@ -58,6 +58,10 @@ static char s_sta_ssid[33];
 static char s_sta_pass[65];
 static bool s_had_ip = false;
 static esp_timer_handle_t s_grace_timer;
+/* Click (0x0A): guaranteed press duration so the Mac registers the click
+ * regardless of WS delivery jitter (a fast tap can arrive as <10ms). */
+#define WEB_CLICK_PRESS_US (150u * 1000u)
+static esp_timer_handle_t s_click_timer;
 static bool s_events_registered = false;
 
 /* WS state push (0x09): set_state() broadcasts the new wifi state to every
@@ -210,6 +214,15 @@ static void __attribute__((unused)) auto_off_cb(void *arg)
 /* ------------------------------------------------------------------ */
 #define WS_FRAME_MAX 16
 
+/* Delayed left-click release for click semantics (0x0A): ensures the Mac
+ * sees a press long enough to register the click. Runs on the esp_timer
+ * task, never blocks httpd. */
+static void click_release_cb(void *arg)
+{
+	(void)arg;
+	input_post_mouse_up(INPUT_MOUSE_BTN_LEFT);
+}
+
 static void handle_ws_frame(httpd_req_t *req, const uint8_t *f, size_t len)
 {
 	web_control_touch();
@@ -232,12 +245,29 @@ static void handle_ws_frame(httpd_req_t *req, const uint8_t *f, size_t len)
 		break;
 	}
 	case 0x03: {
+		/* real button events (drag hold/release) — press duration is
+		 * natural here, no minimum needed */
 		if (len < 3)
 			return;
 		if (f[2])
 			input_post_mouse_down((input_mouse_button_t)f[1]);
 		else
 			input_post_mouse_up((input_mouse_button_t)f[1]);
+		break;
+	}
+	case 0x0A: {
+		/* click semantics: press + delayed release. WS delivery jitter
+		 * compresses a fast tap's actual press (log: 80ms front-end tap
+		 * arrived as 8.8ms down), and the Mac needs a longer press to
+		 * register a click — the C side guarantees it here. */
+		input_post_mouse_down(INPUT_MOUSE_BTN_LEFT);
+		if (s_click_timer == NULL) {
+			esp_timer_create_args_t args = {
+			        .callback = click_release_cb, .name = "web-click",
+			};
+			esp_timer_create(&args, &s_click_timer);
+		}
+		esp_timer_start_once(s_click_timer, WEB_CLICK_PRESS_US);
 		break;
 	}
 	case 0x04: {
