@@ -4,6 +4,10 @@ import { sendMouseMove, sendMouseBtn, sendClick } from './store.js';
 const TAP_MOVE_PX = 30;   /* finger jitter tolerance for tap detection */
 const DRAG_HOLD_MS = 250;  /* hold to start dragging (also the tap window —
                             * matches Guacamole's clickTimingThreshold) */
+const FLUSH_INTERVAL_MS = 16;  /* fixed send cadence: high-refresh (120Hz)
+                                * phones burst 8ms touchmove events that trip
+                                * WiFi-driver/TCP batching — accumulate deltas
+                                * and flush at a steady 60Hz instead */
 
 /* touchpad: slide=move, tap=left click, hold+slide=drag
  * Gesture area uses native addEventListener (lowercase event names) to bypass Preact's
@@ -13,10 +17,19 @@ const DRAG_HOLD_MS = 250;  /* hold to start dragging (also the tap window —
 export function Touchpad() {
   const padRef = useRef(null);
   const hintRef = useRef(null);
-  const st = useRef({ px: 0, py: 0, sx: 0, sy: 0, moved: false, dragging: false, longPressTimer: null });
+  const st = useRef({ px: 0, py: 0, sx: 0, sy: 0, moved: false, dragging: false, longPressTimer: null, accX: 0, accY: 0 });
 
   useEffect(() => {
     const pad = padRef.current;
+    /* Fixed-cadence flusher: decouples the wire from the touchmove event
+     * rate (60Hz vs 120Hz screens), so all devices send an identical
+     * steady stream. */
+    const flushTimer = setInterval(() => {
+      if (st.current.accX !== 0 || st.current.accY !== 0) {
+        sendMouseMove(st.current.accX, st.current.accY);
+        st.current.accX = 0; st.current.accY = 0;
+      }
+    }, FLUSH_INTERVAL_MS);
     const onStart = e => {
       e.preventDefault();
       if (hintRef.current) hintRef.current.style.display = 'none';
@@ -25,6 +38,7 @@ export function Touchpad() {
       st.current.sx = st.current.px = t.clientX;
       st.current.sy = st.current.py = t.clientY;
       st.current.moved = false; st.current.dragging = false;
+      st.current.accX = 0; st.current.accY = 0;
       st.current.longPressTimer = setTimeout(() => {
         st.current.longPressTimer = null;
         if (!st.current.moved) { st.current.dragging = true; sendMouseBtn(0, 1); }  /* hold -> begin drag */
@@ -41,13 +55,19 @@ export function Touchpad() {
       const overThreshold = Math.abs(t.clientX - st.current.sx) + Math.abs(t.clientY - st.current.sy) > TAP_MOVE_PX;
       if (st.current.moved || overThreshold) {
         st.current.moved = true;
-        sendMouseMove(dx, dy);
+        st.current.accX += dx;
+        st.current.accY += dy;
       }
       if (st.current.moved && st.current.longPressTimer) { clearTimeout(st.current.longPressTimer); st.current.longPressTimer = null; }
     };
     const onEnd = e => {
       e.preventDefault();
       if (st.current.longPressTimer) { clearTimeout(st.current.longPressTimer); st.current.longPressTimer = null; }
+      /* flush any accumulated deltas so the last movement is not lost */
+      if (st.current.accX !== 0 || st.current.accY !== 0) {
+        sendMouseMove(st.current.accX, st.current.accY);
+        st.current.accX = 0; st.current.accY = 0;
+      }
       if (st.current.dragging) { st.current.dragging = false; sendMouseBtn(0, 0); }
       else if (!st.current.moved) {
         /* click semantics: the device guarantees the press duration —
@@ -59,6 +79,7 @@ export function Touchpad() {
     pad.addEventListener('touchmove', onMove, { passive: false });
     pad.addEventListener('touchend', onEnd);
     return () => {
+      clearInterval(flushTimer);
       pad.removeEventListener('touchstart', onStart);
       pad.removeEventListener('touchmove', onMove);
       pad.removeEventListener('touchend', onEnd);
