@@ -29,3 +29,4 @@ mac-app/*/build/
 node_modules
 # playwright-cli local test artifacts
 .playwright-cli/
+web/dist/
