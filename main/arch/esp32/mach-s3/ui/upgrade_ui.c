@@ -6,6 +6,7 @@
 #include "lvgl.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "ui_strings.h"
 
 static const char *TAG = "upgrade_ui";
 
@@ -65,7 +66,7 @@ void upgrade_ui_show(void)
 
 	/* ── Title (black on white) ───────────────────────────────────── */
 	lv_obj_t *title = lv_label_create(ui_screen);
-	lv_label_set_text(title, "System Upgrade");
+	lv_label_set_text(title, UI_STR_SYSTEM_UPGRADE);
 	lv_obj_set_style_text_color(title, lv_color_black(), 0);
 	lv_obj_set_style_text_font(title, &mono_opposans_18, 0);
 	lv_obj_align(title, LV_ALIGN_CENTER, 0, -70);
@@ -82,7 +83,7 @@ void upgrade_ui_show(void)
 
 	/* ── Stage label (black text below bar) ───────────────────────── */
 	ui_stage_label = lv_label_create(ui_screen);
-	lv_label_set_text(ui_stage_label, "Preparing...");
+	lv_label_set_text(ui_stage_label, UI_STR_PREPARING);
 	lv_obj_set_style_text_color(ui_stage_label, lv_color_black(), 0);
 	lv_obj_set_style_text_font(ui_stage_label, &mono_opposans_18, 0);
 	lv_obj_align(ui_stage_label, LV_ALIGN_CENTER, 0, 45);

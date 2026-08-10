@@ -12,7 +12,7 @@ idf_component_register(SRCS
     "arch/esp32/mach-s3/ui/flash_mode_ui.c"
     "arch/esp32/mach-s3/ui/lv_mem_psram.c"
     "arch/esp32/mach-s3/ui/wifi_panel.c"
-    "arch/esp32/mach-s3/ui/font/mono_smileysans_18.c"
+    "arch/esp32/mach-s3/ui/font/mono_opposans_14.c"
     "arch/esp32/mach-s3/ui/font/mono_opposans_18.c"
     "arch/esp32/mach-s3/driver/ble/input-ble-hid.c"
     "arch/esp32/mach-s3/driver/ble/ble_gattc.c"
@@ -99,6 +99,7 @@ idf_component_register(SRCS
         )
 
 target_compile_definitions(${COMPONENT_TARGET} PRIVATE RAM_SIZE=4096)
+target_compile_definitions(${COMPONENT_TARGET} PUBLIC LV_LVGL_H_INCLUDE_SIMPLE)
 target_compile_definitions(${COMPONENT_TARGET} PRIVATE DISP_WIDTH=640)
 target_compile_definitions(${COMPONENT_TARGET} PRIVATE DISP_HEIGHT=480)
 # ROM patches (main/core/macplus/core/rom.c); all default off — set 1 to enable. Example fast boot:

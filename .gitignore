@@ -30,3 +30,7 @@ node_modules
 # playwright-cli local test artifacts
 .playwright-cli/
 web/dist/
+
+
+# 10MB font source (contains personal metadata), ignored — never commit
+fonts/

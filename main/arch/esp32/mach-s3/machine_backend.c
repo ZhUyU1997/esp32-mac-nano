@@ -15,6 +15,7 @@
 #include "sony.h"
 #include "settings_ui.h"
 #include "settings_persist.h"
+#include "ui_strings.h"
 
 #define FLOPPY_DIR "/sdcard"
 #define BACKLIGHT_HW_MIN 1u
@@ -193,30 +194,30 @@ static bool cb_insert(machine_backend_t *fb, uint16_t idx, char *msg, size_t msg
 		msg[0] = '\0';
 	if (idx >= fb->count || fb->mac == NULL) {
 		if (msg != NULL && msg_len > 0)
-			(void)snprintf(msg, msg_len, "Cannot insert: invalid selection.");
+			(void)snprintf(msg, msg_len, UI_STR_CANNOT_INSERT_INVALID);
 		return false;
 	}
 	if (fb->insert_selected) {
 		if (msg != NULL && msg_len > 0)
-			(void)snprintf(msg, msg_len, "Cannot insert: disk occupied. Use File > Eject in Mac OS.");
+			(void)snprintf(msg, msg_len, UI_STR_DISK_OCCUPIED);
 		return false;
 	}
 	if (mac_sony_disk_in_place(&fb->mac->sony, 1)) {
 		if (msg != NULL && msg_len > 0)
-			(void)snprintf(msg, msg_len, "Cannot insert: disk occupied. Use File > Eject in Mac OS.");
+			(void)snprintf(msg, msg_len, UI_STR_DISK_OCCUPIED);
 		return false;
 	}
 	(void)insert_now(fb, idx);
 	fb->insert_selected = true;
 	if (msg != NULL && msg_len > 0)
-		(void)snprintf(msg, msg_len, "Inserted");
+		(void)snprintf(msg, msg_len, UI_STR_INSERTED);
 	return true;
 }
 
 static bool cb_eject(machine_backend_t *fb, char *msg, size_t msg_len)
 {
 	if (msg != NULL && msg_len > 0)
-		(void)snprintf(msg, msg_len, "Cannot eject here. Use File > Eject in Mac OS.");
+		(void)snprintf(msg, msg_len, UI_STR_CANNOT_EJECT_HERE);
 	return false;
 }
 

@@ -21,6 +21,7 @@
 #include "lvgl.h"
 #include "wifi_panel.h"
 #include "web-control.h"
+#include "ui_strings.h"
 
 typedef struct {
 	lv_obj_t *panel;
@@ -94,7 +95,7 @@ static void on_switch_changed(lv_event_t *e)
 void wifi_panel_create(lv_obj_t *screen, int32_t x, int32_t y, int32_t w, int32_t h)
 {
 	lv_obj_t *title = lv_label_create(screen);
-	lv_label_set_text(title, "Network");
+	lv_label_set_text(title, UI_STR_NETWORK);
 	lv_obj_set_style_text_color(title, lv_color_black(), 0);
 	lv_obj_set_style_text_font(title, &mono_opposans_18, 0);
 	lv_obj_set_pos(title, x + 2, y - 22);
@@ -133,17 +134,17 @@ void wifi_panel_create(lv_obj_t *screen, int32_t x, int32_t y, int32_t w, int32_
 	 * Keys are dynamic per state (refresh sets rows to match vals):
 	 *   hotspot (3) / connected (4, +mDNS) / connecting, reconnecting (2). */
 	s_panel.keys = lv_label_create(s_panel.panel);
-	lv_label_set_text(s_panel.keys, "Hotspot:\nKey:\nIP:");
+	lv_label_set_text(s_panel.keys, UI_STR_HOTSPOT_KEYS);
 	lv_obj_set_pos(s_panel.keys, 0, 48);
-	lv_obj_set_width(s_panel.keys, 90); /* fits "Hotspot:" (8 chars, mono) */
-	lv_label_set_long_mode(s_panel.keys, LV_LABEL_LONG_WRAP);
+	/* Auto width: no fixed width, so the label hugs its longest row
+	 * ("mDNS：" 71.8px > any fixed 70px would wrap). */
 	lv_obj_set_style_text_color(s_panel.keys, lv_color_black(), 0);
 	lv_obj_set_style_text_font(s_panel.keys, panel_font(), 0);
 	lv_obj_set_style_text_align(s_panel.keys, LV_TEXT_ALIGN_LEFT, 0);
 	lv_obj_set_style_text_line_space(s_panel.keys, 6, 0);
 
 	s_panel.vals = lv_label_create(s_panel.panel);
-	lv_obj_set_pos(s_panel.vals, 92, 48);
+	lv_obj_align_to(s_panel.vals, s_panel.keys, LV_ALIGN_OUT_RIGHT_TOP, 8, 0);
 	lv_obj_set_width(s_panel.vals, lv_pct(100));
 	lv_label_set_long_mode(s_panel.vals, LV_LABEL_LONG_WRAP);
 	lv_obj_set_style_text_color(s_panel.vals, lv_color_black(), 0);
@@ -165,7 +166,7 @@ void wifi_panel_create(lv_obj_t *screen, int32_t x, int32_t y, int32_t w, int32_
 	lv_obj_set_style_text_font(s_panel.btn, panel_font(), 0);
 	lv_obj_add_event_cb(s_panel.btn, on_provision_btn, LV_EVENT_CLICKED, NULL);
 	s_panel.btn_label = lv_label_create(s_panel.btn);
-	lv_label_set_text(s_panel.btn_label, "Provision");
+	lv_label_set_text(s_panel.btn_label, UI_STR_PROVISION);
 	lv_obj_center(s_panel.btn_label);
 
 	/* Guide line (bottom). */
@@ -174,6 +175,7 @@ void wifi_panel_create(lv_obj_t *screen, int32_t x, int32_t y, int32_t w, int32_
 	lv_label_set_long_mode(s_panel.hint, LV_LABEL_LONG_WRAP);
 	lv_obj_set_style_text_color(s_panel.hint, lv_color_black(), 0);
 	lv_obj_set_style_text_font(s_panel.hint, panel_font(), 0);
+	lv_obj_set_style_text_align(s_panel.hint, LV_TEXT_ALIGN_CENTER, 0);
 
 	/* 1s live refresh (P4): wifi state can change at any time (connect,
 	 * drop, provisioning…). Created once — the pause menu rebuilds objects
@@ -198,12 +200,12 @@ void wifi_panel_set_enabled(bool enabled)
 static const char *state_text(wifi_state_t st)
 {
 	switch (st) {
-	case WIFI_STATE_OFF: return "Off";
-	case WIFI_STATE_PROVISIONING: return "Provisioning";
-	case WIFI_STATE_CONNECTING: return "Connecting...";
-	case WIFI_STATE_CONNECTED: return "Connected";
-	case WIFI_STATE_RECONNECTING: return "Reconnecting...";
-	case WIFI_STATE_AP_ONLY: return "Hotspot";
+	case WIFI_STATE_OFF: return UI_STR_STATE_OFF;
+	case WIFI_STATE_PROVISIONING: return UI_STR_STATE_PROVISIONING;
+	case WIFI_STATE_CONNECTING: return UI_STR_STATE_CONNECTING;
+	case WIFI_STATE_CONNECTED: return UI_STR_STATE_CONNECTED;
+	case WIFI_STATE_RECONNECTING: return UI_STR_STATE_RECONNECTING;
+	case WIFI_STATE_AP_ONLY: return UI_STR_STATE_AP_ONLY;
 	}
 	return "?";
 }
@@ -212,22 +214,6 @@ static void wifi_panel_timer_cb(lv_timer_t *t)
 {
 	(void)t;
 	wifi_panel_refresh();
-}
-
-/* Panel font is ASCII-only (--range 32-127): show the hotspot SSID's ASCII
- * prefix ("MacNano…") so Chinese SSID bytes don't render as garbage. */
-static void ascii_prefix(const char *in, char *out, size_t out_len)
-{
-	size_t j = 0;
-	for (size_t i = 0; in[i] != '\0' && j + 2 < out_len; i++) {
-		const unsigned char c = (unsigned char)in[i];
-		if (c >= 0x80) { /* non-ASCII: truncate */
-			strcpy(out + j, "...");
-			return;
-		}
-		out[j++] = (char)c;
-	}
-	out[j] = '\0';
 }
 
 void wifi_panel_refresh(void)
@@ -265,15 +251,13 @@ void wifi_panel_refresh(void)
 		lv_obj_clear_flag(s_panel.vals, LV_OBJ_FLAG_HIDDEN);
 		if (st == WIFI_STATE_PROVISIONING || st == WIFI_STATE_AP_ONLY) {
 			/* hotspot info: SSID / key / AP IP (3 rows) */
-			lv_label_set_text(s_panel.keys, "Hotspot:\nKey:\nIP:");
-			char ap_ssid[40];
-			ascii_prefix(WEB_AP_SSID, ap_ssid, sizeof(ap_ssid));
+			lv_label_set_text(s_panel.keys, UI_STR_HOTSPOT_KEYS);
 			char buf[96];
-			snprintf(buf, sizeof(buf), "%s\n" WEB_AP_PASS "\n" WEB_AP_IP, ap_ssid);
+			snprintf(buf, sizeof(buf), "%s\n" WEB_AP_PASS "\n" WEB_AP_IP, WEB_AP_SSID);
 			lv_label_set_text(s_panel.vals, buf);
 		} else if (st == WIFI_STATE_CONNECTED) {
 			/* connected: LAN IP + mDNS name (4 rows) */
-			lv_label_set_text(s_panel.keys, "WiFi:\nKey:\nIP:\nmDNS:");
+			lv_label_set_text(s_panel.keys, UI_STR_WIFI_KEYS);
 			char buf[96];
 			snprintf(buf, sizeof(buf), "%s\n-\n%s\nmacnano.local",
 			         sta_ssid[0] ? sta_ssid : "-",
@@ -281,7 +265,7 @@ void wifi_panel_refresh(void)
 			lv_label_set_text(s_panel.vals, buf);
 		} else {
 			/* connecting / reconnecting: no IP/mDNS rows until connected */
-			lv_label_set_text(s_panel.keys, "WiFi:\nKey:");
+			lv_label_set_text(s_panel.keys, UI_STR_WIFI_KEYS_SHORT);
 			char buf[96];
 			snprintf(buf, sizeof(buf), "%s\n-", sta_ssid[0] ? sta_ssid : "-");
 			lv_label_set_text(s_panel.vals, buf);
@@ -290,11 +274,11 @@ void wifi_panel_refresh(void)
 
 	/* guide line */
 	if (st == WIFI_STATE_OFF || st == WIFI_STATE_CONNECTED)
-		lv_label_set_text(s_panel.hint, "Hold rear button 1.5s to provision");
+		lv_label_set_text(s_panel.hint, UI_STR_HINT_HOLD_PROVISION);
 	else if (st == WIFI_STATE_PROVISIONING)
-		lv_label_set_text(s_panel.hint, "Connect your phone to this hotspot");
+		lv_label_set_text(s_panel.hint, UI_STR_HINT_CONNECT_HOTSPOT);
 	else if (st == WIFI_STATE_CONNECTING || st == WIFI_STATE_RECONNECTING)
-		lv_label_set_text(s_panel.hint, "Hold rear button to provision");
+		lv_label_set_text(s_panel.hint, UI_STR_HINT_HOLD_BUTTON);
 	else
 		lv_label_set_text(s_panel.hint, "");
 
@@ -304,9 +288,9 @@ void wifi_panel_refresh(void)
 	} else {
 		lv_obj_clear_flag(s_panel.btn, LV_OBJ_FLAG_HIDDEN);
 		lv_label_set_text(s_panel.btn_label,
-		                  st == WIFI_STATE_OFF ? "Provision" : "Re-provision");
+		                  st == WIFI_STATE_OFF ? UI_STR_PROVISION : UI_STR_REPROVISION);
 	}
 
 	/* set text first, then align so the wrapped height is placed correctly */
-	lv_obj_align(s_panel.hint, LV_ALIGN_BOTTOM_LEFT, 10, -10);
+	lv_obj_align(s_panel.hint, LV_ALIGN_BOTTOM_MID, 0, -10);
 }

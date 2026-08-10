@@ -7,6 +7,7 @@
 #include "lvgl.h"
 #include "settings_ui.h"
 #include "wifi_panel.h"
+#include "ui_strings.h"
 
 #include "esp_app_desc.h"
 #include "esp_ota_ops.h"
@@ -14,6 +15,7 @@
 #include "flash_mode.h"
 
 extern const lv_font_t mono_opposans_18;
+extern const lv_font_t mono_opposans_14;
 
 #define SETTINGS_UI_MAX_FLOPPY 16
 #define SETTINGS_UI_MAX_NAME 64
@@ -245,11 +247,11 @@ static void on_insert_clicked(lv_event_t *e)
 	(void)e;
 	const uint16_t idx = (uint16_t)g_settings_ui.selected;
 	if (idx >= g_settings_ui.count) {
-		settings_ui_show_toast("Select a floppy first.", true);
+		settings_ui_show_toast(UI_STR_SELECT_FLOPPY_FIRST, true);
 		return;
 	}
 	if (g_settings_ui.backend->insert == NULL) {
-		settings_ui_show_toast("Insert unavailable. Please retry.", true);
+		settings_ui_show_toast(UI_STR_INSERT_UNAVAILABLE, true);
 		return;
 	}
 
@@ -263,10 +265,10 @@ static void on_insert_clicked(lv_event_t *e)
 		settings_ui_refresh_all_rows();
 	}
 	if (!ok) {
-		settings_ui_show_toast((msg[0] != '\0') ? msg : "Insert failed. Please retry.", true);
+		settings_ui_show_toast((msg[0] != '\0') ? msg : UI_STR_INSERT_FAILED, true);
 		return;
 	}
-	settings_ui_show_toast((msg[0] != '\0') ? msg : "Inserted", false);
+	settings_ui_show_toast((msg[0] != '\0') ? msg : UI_STR_INSERTED, false);
 }
 
 static void on_back_clicked(lv_event_t *e)
@@ -279,10 +281,10 @@ static void on_reboot_clicked(lv_event_t *e)
 {
 	(void)e;
 	if (g_settings_ui.backend->reboot == NULL) {
-		settings_ui_show_toast("Reboot unavailable.", true);
+		settings_ui_show_toast(UI_STR_REBOOT_UNAVAILABLE, true);
 		return;
 	}
-	settings_ui_show_toast("Rebooting...", false);
+	settings_ui_show_toast(UI_STR_REBOOTING, false);
 	g_settings_ui.backend->reboot(g_settings_ui.backend);
 }
 
@@ -451,7 +453,7 @@ void mach_s3_settings_ui_show(void)
 
 	const int32_t qs_top = 4;
 	const int32_t qs_row_h = 34;
-	const int32_t qs_label_w = 96;
+	const int32_t qs_label_w = 48;  /* "背光"/"音量" = 2 full-width chars (36px) + 12px slack */
 	const int32_t qs_gap = 12;
 	const int32_t qs_slider_y_offset = 7;
 
@@ -483,7 +485,7 @@ void mach_s3_settings_ui_show(void)
 	const int32_t quick_settings_panel_h = quick_h - section_title_h;
 
 	lv_obj_t *title = lv_label_create(screen);
-	lv_label_set_text(title, "Pause Menu");
+	lv_label_set_text(title, UI_STR_PAUSE_MENU);
 	lv_obj_set_style_text_color(title, lv_color_black(), 0);
 	lv_obj_set_style_text_font(title, &mono_opposans_18, 0);
 	lv_obj_set_style_transform_zoom(title, 320, 0);
@@ -500,12 +502,12 @@ void mach_s3_settings_ui_show(void)
 		lv_obj_t *meta_label = lv_label_create(screen);
 		lv_label_set_text(meta_label, meta);
 		lv_obj_set_style_text_color(meta_label, lv_color_black(), 0);
-		lv_obj_set_style_text_font(meta_label, &mono_opposans_18, 0);
+		lv_obj_set_style_text_font(meta_label, &mono_opposans_14, 0);
 		lv_obj_align(meta_label, LV_ALIGN_TOP_LEFT, inset, inset);
 	}
 
 	lv_obj_t *floppy_title = lv_label_create(screen);
-	lv_label_set_text(floppy_title, "Floppy Manager");
+	lv_label_set_text(floppy_title, UI_STR_FLOPPY_MANAGER);
 	lv_obj_set_style_text_color(floppy_title, lv_color_black(), 0);
 	lv_obj_set_style_text_font(floppy_title, &mono_opposans_18, 0);
 	lv_obj_set_pos(floppy_title, panel_x + 2, floppy_title_y);
@@ -554,7 +556,7 @@ void mach_s3_settings_ui_show(void)
 	lv_obj_set_style_pad_top(action_col, 8, 0);
 	lv_obj_set_style_pad_bottom(action_col, 0, 0);
 
-	g_settings_ui.insert_action_btn = create_action_btn(action_col, "Insert");
+	g_settings_ui.insert_action_btn = create_action_btn(action_col, UI_STR_INSERT);
 	lv_obj_set_width(g_settings_ui.insert_action_btn, lv_pct(100));
 	lv_obj_set_height(g_settings_ui.insert_action_btn, floppy_action_h);
 	lv_obj_align(g_settings_ui.insert_action_btn, LV_ALIGN_TOP_MID, 0, 0);
@@ -615,7 +617,7 @@ void mach_s3_settings_ui_show(void)
 	}
 
 	lv_obj_t *quick_settings_title = lv_label_create(screen);
-	lv_label_set_text(quick_settings_title, "Quick Settings");
+	lv_label_set_text(quick_settings_title, UI_STR_QUICK_SETTINGS);
 	lv_obj_set_style_text_color(quick_settings_title, lv_color_black(), 0);
 	lv_obj_set_style_text_font(quick_settings_title, &mono_opposans_18, 0);
 	lv_obj_set_pos(quick_settings_title, panel_x + 2, quick_settings_title_y);
@@ -626,18 +628,18 @@ void mach_s3_settings_ui_show(void)
 	wifi_panel_create(screen, right_x, wifi_panel_y, right_w, wifi_panel_h);
 
 	lv_obj_t *quick_settings_panel = create_section_panel(screen, panel_x, quick_settings_panel_y, panel_w, quick_settings_panel_h);
-	/* Row: [title(96)] gap(12) [slider] gap(8) [val_label(~40)] margin(8) */
+	/* Row: [title(96)] gap(12) [slider] gap(16) [val_label(~40)] margin(8) */
 	const int32_t qs_control_x = qs_label_w + qs_gap;               /* =108 */
 	const int32_t qs_val_x = panel_w - 20 - 48;                     /* value label left edge: panel content - 48px */
-	int32_t qs_control_w = qs_val_x - qs_control_x - 8;             /* slider fills between with 8px gap */
+	int32_t qs_control_w = qs_val_x - qs_control_x - 16;            /* slider fills between with 16px gap (clear of knob) */
 
 	lv_obj_t *bl_label = lv_label_create(quick_settings_panel);
-	lv_label_set_text(bl_label, "Backlight");
+	lv_label_set_text(bl_label, UI_STR_BACKLIGHT);
 	lv_obj_set_style_text_color(bl_label, lv_color_black(), 0);
 	lv_obj_set_style_text_font(bl_label, &mono_opposans_18, 0);
 	lv_obj_set_width(bl_label, qs_label_w);
 	lv_obj_set_style_text_align(bl_label, LV_TEXT_ALIGN_LEFT, 0);
-	lv_obj_set_pos(bl_label, 0, qs_top);
+	lv_obj_set_pos(bl_label, 0, qs_top + qs_slider_y_offset - 4);
 
 	lv_obj_t *bl_slider = lv_slider_create(quick_settings_panel);
 	lv_obj_set_width(bl_slider, qs_control_w);
@@ -666,16 +668,16 @@ void mach_s3_settings_ui_show(void)
 	}
 	lv_obj_set_style_text_color(bl_val_label, lv_color_black(), 0);
 	lv_obj_set_style_text_font(bl_val_label, &mono_opposans_18, 0);
-	lv_obj_set_pos(bl_val_label, qs_val_x, qs_top + qs_slider_y_offset + 1);
+	lv_obj_set_pos(bl_val_label, qs_val_x, qs_top + qs_slider_y_offset - 4);
 	lv_obj_set_user_data(bl_slider, bl_val_label);
 
 	lv_obj_t *vol_label = lv_label_create(quick_settings_panel);
-	lv_label_set_text(vol_label, "Volume");
+	lv_label_set_text(vol_label, UI_STR_VOLUME);
 	lv_obj_set_style_text_color(vol_label, lv_color_black(), 0);
 	lv_obj_set_style_text_font(vol_label, &mono_opposans_18, 0);
 	lv_obj_set_width(vol_label, qs_label_w);
 	lv_obj_set_style_text_align(vol_label, LV_TEXT_ALIGN_LEFT, 0);
-	lv_obj_set_pos(vol_label, 0, qs_top + qs_row_h);
+	lv_obj_set_pos(vol_label, 0, qs_top + qs_row_h + qs_slider_y_offset - 4);
 
 	lv_obj_t *vol_slider = lv_slider_create(quick_settings_panel);
 	lv_obj_set_width(vol_slider, qs_control_w);
@@ -704,19 +706,19 @@ void mach_s3_settings_ui_show(void)
 	}
 	lv_obj_set_style_text_color(vol_val_label, lv_color_black(), 0);
 	lv_obj_set_style_text_font(vol_val_label, &mono_opposans_18, 0);
-	lv_obj_set_pos(vol_val_label, qs_val_x, qs_top + qs_row_h + qs_slider_y_offset + 1);
+	lv_obj_set_pos(vol_val_label, qs_val_x, qs_top + qs_row_h + qs_slider_y_offset - 4);
 	lv_obj_set_user_data(vol_slider, vol_val_label);
 
 	const int32_t btn_w = 140;
 	const int32_t btn_gap = 12;
 	const int32_t btn_h = 38;
 	/* Bottom row: Resume | Reboot */
-	lv_obj_t *resume_btn = create_action_btn(screen, "Resume");
+	lv_obj_t *resume_btn = create_action_btn(screen, UI_STR_RESUME);
 	lv_obj_set_size(resume_btn, btn_w, btn_h);
 	lv_obj_align(resume_btn, LV_ALIGN_BOTTOM_MID, -(btn_w + btn_gap) / 2, -10);
 	lv_obj_add_event_cb(resume_btn, on_back_clicked, LV_EVENT_CLICKED, NULL);
 
-	lv_obj_t *reboot_btn = create_action_btn(screen, "Reboot");
+	lv_obj_t *reboot_btn = create_action_btn(screen, UI_STR_REBOOT);
 	lv_obj_set_size(reboot_btn, btn_w, btn_h);
 	lv_obj_align(reboot_btn, LV_ALIGN_BOTTOM_MID, (btn_w + btn_gap) / 2, -10);
 	lv_obj_add_event_cb(reboot_btn, on_reboot_clicked, LV_EVENT_CLICKED, NULL);
@@ -724,10 +726,10 @@ void mach_s3_settings_ui_show(void)
 	/* Top-right: Recover / Update — placed away from the common actions to
 	 * prevent accidental taps. Same style as the other buttons, kept small
 	 * and unobtrusive (14px font). */
-	lv_obj_t *recover_btn = create_action_btn(screen, "Recover / Update");
-	lv_obj_set_size(recover_btn, 140, 26);
+	lv_obj_t *recover_btn = create_action_btn(screen, UI_STR_RECOVER_UPDATE);
+	lv_obj_set_size(recover_btn, 100, 26);
 	lv_obj_set_style_pad_all(recover_btn, 0, 0);
-	lv_obj_set_style_text_font(lv_obj_get_child(recover_btn, 0), &lv_font_montserrat_14, 0);
+	lv_obj_set_style_text_font(lv_obj_get_child(recover_btn, 0), &mono_opposans_14, 0);
 	lv_obj_align(recover_btn, LV_ALIGN_TOP_RIGHT, -inset, inset);
 	lv_obj_add_event_cb(recover_btn, on_recover_update_clicked, LV_EVENT_CLICKED, NULL);
 

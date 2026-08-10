@@ -8,6 +8,7 @@
 #include "esp_system.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "ui_strings.h"
 
 static const char *TAG = "sdcard_upgrade";
 
@@ -86,14 +87,14 @@ static esp_err_t upgrade_do_run(const char *upgrade_path, upgrade_progress_fn pr
 	uint8_t header[ESUP_HEADER_SZ];
 	if (fread(header, 1, ESUP_HEADER_SZ, fp) != ESUP_HEADER_SZ) {
 		ESP_LOGE(TAG, "Failed to read header");
-		PROGRESS_ERR("Read header failed");
+		PROGRESS_ERR(UI_STR_UPGRADE_ERR_READ_HEADER);
 		fclose(fp);
 		return ESP_FAIL;
 	}
 
 	if (memcmp(header, ESUP_MAGIC, 4) != 0) {
 		ESP_LOGE(TAG, "Bad magic: expected 'ESUP', got '%.4s'", header);
-		PROGRESS_ERR("Invalid upgrade file");
+		PROGRESS_ERR(UI_STR_UPGRADE_ERR_INVALID_FILE);
 		fclose(fp);
 		return ESP_ERR_INVALID_VERSION;
 	}
@@ -103,14 +104,14 @@ static esp_err_t upgrade_do_run(const char *upgrade_path, upgrade_progress_fn pr
 
 	if (version != 1) {
 		ESP_LOGE(TAG, "Unsupported version: %u", version);
-		PROGRESS_ERR("Unsupported upgrade version");
+		PROGRESS_ERR(UI_STR_UPGRADE_ERR_UNSUPPORTED_VER);
 		fclose(fp);
 		return ESP_ERR_INVALID_VERSION;
 	}
 
 	if (count == 0) {
 		ESP_LOGE(TAG, "No entries in upgrade file");
-		PROGRESS_ERR("Empty upgrade file");
+		PROGRESS_ERR(UI_STR_UPGRADE_ERR_EMPTY_FILE);
 		fclose(fp);
 		return ESP_FAIL;
 	}
@@ -122,14 +123,14 @@ static esp_err_t upgrade_do_run(const char *upgrade_path, upgrade_progress_fn pr
 	uint8_t *entries = malloc(entry_table_sz);
 	if (entries == NULL) {
 		ESP_LOGE(TAG, "Failed to allocate entry table (%zu bytes)", entry_table_sz);
-		PROGRESS_ERR("Out of memory");
+		PROGRESS_ERR(UI_STR_UPGRADE_ERR_OOM);
 		fclose(fp);
 		return ESP_ERR_NO_MEM;
 	}
 
 	if (fread(entries, 1, entry_table_sz, fp) != entry_table_sz) {
 		ESP_LOGE(TAG, "Failed to read entry table");
-		PROGRESS_ERR("Read entry table failed");
+		PROGRESS_ERR(UI_STR_UPGRADE_ERR_READ_ENTRIES);
 		free(entries);
 		fclose(fp);
 		return ESP_FAIL;
@@ -141,7 +142,7 @@ static esp_err_t upgrade_do_run(const char *upgrade_path, upgrade_progress_fn pr
 	uint8_t *buf = malloc(OTA_BUF_SIZE);
 	if (buf == NULL) {
 		ESP_LOGE(TAG, "Failed to allocate I/O buffer (%d bytes)", OTA_BUF_SIZE);
-		PROGRESS_ERR("Out of memory");
+		PROGRESS_ERR(UI_STR_UPGRADE_ERR_OOM);
 		free(entries);
 		fclose(fp);
 		return ESP_ERR_NO_MEM;
@@ -160,7 +161,7 @@ static esp_err_t upgrade_do_run(const char *upgrade_path, upgrade_progress_fn pr
 		/* Seek to the data in the file */
 		if (fseek(fp, (long)data_offset, SEEK_SET) != 0) {
 			ESP_LOGE(TAG, "Seek to offset %" PRIu32 " failed", data_offset);
-			PROGRESS_ERR("SD card seek error");
+			PROGRESS_ERR(UI_STR_UPGRADE_ERR_SD_SEEK);
 			overall_err = ESP_FAIL;
 			break;
 		}
@@ -171,13 +172,13 @@ static esp_err_t upgrade_do_run(const char *upgrade_path, upgrade_progress_fn pr
 			const esp_partition_t *target = esp_ota_get_next_update_partition(NULL);
 			if (target == NULL) {
 				ESP_LOGE(TAG, "No inactive OTA partition available");
-				PROGRESS_ERR("No OTA slot available");
+				PROGRESS_ERR(UI_STR_UPGRADE_ERR_NO_OTA_SLOT);
 				overall_err = ESP_FAIL;
 				break;
 			}
 			if (data_size > target->size) {
 				ESP_LOGE(TAG, "Firmware too large: %" PRIu32 " > %" PRIu32, data_size, target->size);
-				PROGRESS_ERR("Firmware too large for partition");
+				PROGRESS_ERR(UI_STR_UPGRADE_ERR_TOO_LARGE);
 				overall_err = ESP_ERR_INVALID_SIZE;
 				break;
 			}
@@ -194,14 +195,14 @@ static esp_err_t upgrade_do_run(const char *upgrade_path, upgrade_progress_fn pr
 			}
 
 			/* Stream firmware from SD card → OTA flash */
-			PROGRESS(0, "Writing firmware...");
+			PROGRESS(0, UI_STR_UPGRADE_STAGE_WRITE_FW);
 			uint32_t remaining = data_size;
 			int last_pct = -1;
 			while (remaining > 0) {
 				size_t chunk = (remaining < OTA_BUF_SIZE) ? remaining : OTA_BUF_SIZE;
 				if (fread(buf, 1, chunk, fp) != chunk) {
 					ESP_LOGE(TAG, "Read error at offset %" PRIu32, data_offset);
-					PROGRESS_ERR("SD card read error");
+					PROGRESS_ERR(UI_STR_UPGRADE_ERR_SD_READ);
 					esp_ota_abort(ota_handle);
 					overall_err = ESP_FAIL;
 					break;
@@ -217,7 +218,7 @@ static esp_err_t upgrade_do_run(const char *upgrade_path, upgrade_progress_fn pr
 				int pct = (int)((data_size - remaining) * 100 / data_size);
 				if (pct != last_pct) {
 					ESP_LOGI(TAG, "  firmware: %d%%", pct);
-					PROGRESS(pct, "Writing firmware...");
+					PROGRESS(pct, UI_STR_UPGRADE_STAGE_WRITE_FW);
 					last_pct = pct;
 				}
 			}
@@ -244,29 +245,29 @@ static esp_err_t upgrade_do_run(const char *upgrade_path, upgrade_progress_fn pr
 		} else if (strcmp(part_name, "hd") == 0) {
 			const esp_partition_t *hd_part = esp_partition_find_first((esp_partition_type_t)0x40, (esp_partition_subtype_t)0x02, "hd");
 			if (hd_part == NULL) {
-				ESP_LOGE(TAG, "HD partition not found");
-				PROGRESS_ERR("HD partition not found");
+				ESP_LOGE(TAG, UI_STR_UPGRADE_ERR_HD_NOT_FOUND);
+				PROGRESS_ERR(UI_STR_UPGRADE_ERR_HD_NOT_FOUND);
 				overall_err = ESP_FAIL;
 				break;
 			}
 			if (data_size > hd_part->size) {
 				ESP_LOGE(TAG, "HD image too large: %" PRIu32 " > %" PRIu32, data_size, hd_part->size);
-				PROGRESS_ERR("HD image too large");
+				PROGRESS_ERR(UI_STR_UPGRADE_ERR_HD_TOO_LARGE);
 				overall_err = ESP_ERR_INVALID_SIZE;
 				break;
 			}
 
-			PROGRESS(0, "Erasing HD...");
+			PROGRESS(0, UI_STR_UPGRADE_STAGE_ERASE_HD);
 			ESP_LOGI(TAG, "Erasing HD partition (%" PRIu32 " bytes)...", hd_part->size);
 			overall_err = esp_partition_erase_range(hd_part, 0, hd_part->size);
 			if (overall_err != ESP_OK) {
 				ESP_LOGE(TAG, "Erase HD failed: %s", esp_err_to_name(overall_err));
-				PROGRESS_ERR("HD erase failed");
+				PROGRESS_ERR(UI_STR_UPGRADE_ERR_HD_ERASE);
 				break;
 			}
 
 			/* Stream HD image from SD card → HD flash partition */
-			PROGRESS(0, "Writing HD image...");
+			PROGRESS(0, UI_STR_UPGRADE_STAGE_WRITE_HD);
 			uint32_t remaining = data_size;
 			uint32_t written = 0;
 			int last_pct = -1;
@@ -274,14 +275,14 @@ static esp_err_t upgrade_do_run(const char *upgrade_path, upgrade_progress_fn pr
 				size_t chunk = (remaining < OTA_BUF_SIZE) ? remaining : OTA_BUF_SIZE;
 				if (fread(buf, 1, chunk, fp) != chunk) {
 					ESP_LOGE(TAG, "Read error at HD offset %" PRIu32, written);
-					PROGRESS_ERR("SD card read error");
+					PROGRESS_ERR(UI_STR_UPGRADE_ERR_SD_READ);
 					overall_err = ESP_FAIL;
 					break;
 				}
 				overall_err = esp_partition_write(hd_part, written, buf, chunk);
 				if (overall_err != ESP_OK) {
 					ESP_LOGE(TAG, "Write HD failed at offset %" PRIu32 ": %s", written, esp_err_to_name(overall_err));
-					PROGRESS_ERR("HD write failed");
+					PROGRESS_ERR(UI_STR_UPGRADE_ERR_HD_WRITE);
 					break;
 				}
 				remaining -= chunk;
@@ -289,7 +290,7 @@ static esp_err_t upgrade_do_run(const char *upgrade_path, upgrade_progress_fn pr
 				int pct = (int)(written * 100 / data_size);
 				if (pct != last_pct) {
 					ESP_LOGI(TAG, "  hd: %d%%", pct);
-					PROGRESS(pct, "Writing HD image...");
+					PROGRESS(pct, UI_STR_UPGRADE_STAGE_WRITE_HD);
 					last_pct = pct;
 				}
 			}

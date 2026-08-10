@@ -2,6 +2,7 @@
 
 #include "esp_log.h"
 #include "lvgl.h"
+#include "ui_strings.h"
 
 static const char *TAG = "flash_mode_ui";
 
@@ -35,17 +36,17 @@ void flash_mode_ui_show(void)
 
 	/* ── Title ─────────────────────────────────────────────────── */
 	lv_obj_t *title = lv_label_create(ui_screen);
-	lv_label_set_text(title, "Recover / Update");
+	lv_label_set_text(title, UI_STR_RECOVER_UPDATE);
 	lv_obj_set_style_text_color(title, lv_color_black(), 0);
 	lv_obj_set_style_text_font(title, &mono_opposans_18, 0);
 	lv_obj_align(title, LV_ALIGN_CENTER, 0, -80);
 
 	/* ── Steps ────────────────────────────────────────────────── */
 	static const char *k_steps[] = {
-	        "1. Connect USB cable to computer",
-	        "2. Open web flasher, pick firmware",
-	        "3. USB keyboard disabled in this mode",
-	        "Exit: power cycle the device",
+	        UI_STR_FLASH_STEP1,
+	        UI_STR_FLASH_STEP2,
+	        UI_STR_FLASH_STEP3,
+	        UI_STR_FLASH_EXIT,
 	};
 	for (int i = 0; i < 4; i++) {
 		lv_obj_t *step = lv_label_create(ui_screen);
