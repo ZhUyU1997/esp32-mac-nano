@@ -4,6 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include "fast_attr.h"
+#include "video/lcd_colors.h"
 
 static inline void FAST_FUNC_ATTR blit_lvgl_i1_to_lcd_l8_rot90_bit1_white(uint8_t *restrict lcd_fb, const uint8_t *restrict px_bits, int lcd_w, int lcd_h)
 {
@@ -20,10 +21,10 @@ static inline void FAST_FUNC_ATTR blit_lvgl_i1_to_lcd_l8_rot90_bit1_white(uint8_
 			const uint32_t b2 = ((uint32_t)(src_ptr[160u] >> bit_idx) & 1u);
 			const uint32_t b3 = ((uint32_t)(src_ptr[240u] >> bit_idx) & 1u);
 
-			const uint32_t o0 = ((uint32_t)0 - b0) & 0xFFu;
-			const uint32_t o1 = ((uint32_t)0 - b1) & 0xFFu;
-			const uint32_t o2 = ((uint32_t)0 - b2) & 0xFFu;
-			const uint32_t o3 = ((uint32_t)0 - b3) & 0xFFu;
+			const uint32_t o0 = ((uint32_t)0 - b0) & LCD_COLOR_ON;
+			const uint32_t o1 = ((uint32_t)0 - b1) & LCD_COLOR_ON;
+			const uint32_t o2 = ((uint32_t)0 - b2) & LCD_COLOR_ON;
+			const uint32_t o3 = ((uint32_t)0 - b3) & LCD_COLOR_ON;
 
 			*dst_u32++ = o0 | (o1 << 8) | (o2 << 16) | (o3 << 24);
 		}
@@ -45,10 +46,10 @@ static inline void FAST_FUNC_ATTR blit_lvgl_i1_to_lcd_l8_rot90_bit1_black(uint8_
 			const uint32_t b2 = ((uint32_t)(src_ptr[160u] >> bit_idx) & 1u);
 			const uint32_t b3 = ((uint32_t)(src_ptr[240u] >> bit_idx) & 1u);
 
-			const uint32_t o0 = (~((uint32_t)0 - b0)) & 0xFFu;
-			const uint32_t o1 = (~((uint32_t)0 - b1)) & 0xFFu;
-			const uint32_t o2 = (~((uint32_t)0 - b2)) & 0xFFu;
-			const uint32_t o3 = (~((uint32_t)0 - b3)) & 0xFFu;
+			const uint32_t o0 = (~((uint32_t)0 - b0)) & LCD_COLOR_ON;
+			const uint32_t o1 = (~((uint32_t)0 - b1)) & LCD_COLOR_ON;
+			const uint32_t o2 = (~((uint32_t)0 - b2)) & LCD_COLOR_ON;
+			const uint32_t o3 = (~((uint32_t)0 - b3)) & LCD_COLOR_ON;
 
 			*dst_u32++ = o0 | (o1 << 8) | (o2 << 16) | (o3 << 24);
 		}
@@ -76,10 +77,10 @@ static inline void FAST_FUNC_ATTR blit_mac_mono_to_lcd_rgba(void *restrict lcd_f
 			const uint32_t m2 = (uint32_t)0 - b2;
 			const uint32_t m3 = (uint32_t)0 - b3;
 
-			const uint32_t o0 = (~m0) & 0x000000FFu;
-			const uint32_t o1 = ((~m1) & 0x000000FFu) << 8;
-			const uint32_t o2 = ((~m2) & 0x000000FFu) << 16;
-			const uint32_t o3 = ((~m3) & 0x000000FFu) << 24;
+			const uint32_t o0 = (~m0) & LCD_COLOR_ON;
+			const uint32_t o1 = ((~m1) & LCD_COLOR_ON) << 8;
+			const uint32_t o2 = ((~m2) & LCD_COLOR_ON) << 16;
+			const uint32_t o3 = ((~m3) & LCD_COLOR_ON) << 24;
 			*dst_u32++ = o0 | o1 | o2 | o3;
 		}
 	}
