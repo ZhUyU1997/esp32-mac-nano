@@ -20,6 +20,19 @@ make mac-all       # build all Mac 68k apps (Retro68)
 make mac-clean     # clean Mac app build
 ```
 
+## UI Strings & Fonts
+
+UI text is centralized in `main/arch/esp32/mach-s3/ui/ui_strings.json` (source of truth, 56 entries, Chinese). Generated artifacts are committed, the generator scripts are the only way to edit them:
+
+```bash
+node scripts/gen-ui-strings.js                 # ui_strings.json → include/ui_strings.h
+node scripts/gen-mono-opposans-font.js [14|18] # extract non-ASCII chars from JSON → lv_font_conv → ui/font/mono_opposans_<size>.c
+```
+
+- 18px is the main menu font (bpp=1); 14px is the auxiliary font for the Recover/Update button + version label (bpp=2 AA, small sizes look grainy at bpp=1).
+- Source TTF lives at `fonts/OPPOSans-R.ttf` — git-ignored (`fonts/` in `.gitignore`, contains personal metadata, never commit it). Override the path with `OPPOSANS_TTF`.
+- Font glyphs are auto-extracted from `ui_strings.json` (non-ASCII chars only) — adding UI text then re-running the scripts regenerates the fonts with no missing glyphs.
+
 ## Architecture
 
 | Layer | Directory | Rules |
