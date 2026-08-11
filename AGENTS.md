@@ -104,11 +104,18 @@ ESP32-S3 固件，多平台 Macintosh Plus 模拟器。详见 [PROJECT.md](PROJE
 
 ## Build — 构建
 
+IDF 操作（build/flash/monitor）一律通过 idf-mcp 的 MCP 工具执行
+（工具清单自查 `mcp`），不在本会话 shell 中直接执行——用户终端不可见。
+
+MCP 不可用时，按序处理：
+1. **提醒用户启动**（agent 不自行启动）：项目根目录 `pnpm idf-mcp`
+2. 用户不启动，则回退到本会话 shell 直接执行：
+
 ```bash
 source ~/.espressif/tools/activate_idf_v5.5.4.sh 1>/dev/null 2>&1; \
   cd /path/to/project && idf.py build 2>&1 | tail -100
 ```
-原样执行以上命令。若失败，检查 idf 版本和激活脚本路径。
-- `source` 后面用 `;` 不能用 `&&` — activate 返回码是 1。
+原样执行。若失败，检查 idf 版本和激活脚本路径。
+- `source` 后 `;` 不能用 `&&` — activate 返回码是 1。
 - **绝不编辑 `sdkconfig`** — 用 `sdkconfig.defaults` 或 `idf.py menuconfig`。
 - 架构文档：[`PROJECT.md`](PROJECT.md)。

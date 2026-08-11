@@ -1,0 +1,7 @@
+{
+  "name": "esp32-mini-mac",
+  "private": true,
+  "scripts": {
+    "idf-mcp": "pnpm --dir idf-mcp start"
+  }
+}
