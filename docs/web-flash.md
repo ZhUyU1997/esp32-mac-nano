@@ -14,7 +14,7 @@ pause menu "Flash Mode" → 写 NVS → esp_restart
   → 自动重启回正常模式
 ```
 
-限制：WebSerial 仅桌面 Chrome/Edge（Android 无原生支持、iOS 拒绝）。
+限制：WebSerial 仅桌面 Chrome/Edge/Firefox 151+（Android 无原生支持、iOS 拒绝）。
 
 ## 已完成（真机验证）
 

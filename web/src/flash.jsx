@@ -34,11 +34,28 @@ async function loadFirmwarePackage(file, log) {
       const hash = await sha256Hex(data);
       if (hash !== f.sha256) throw new Error(`${f.name} SHA256 校验失败`);
     }
-    entries.push({ address: parseInt(f.address, 16), data });
+    entries.push({ address: parseInt(f.address, 16), name: f.name, data });
     log(`  固件包: ${f.address} ${f.name} (${data.length}B)`);
   }
   return { entries, manifest };
 }
+
+/* ── Inline icons (stroke, currentColor) ───────────────────────── */
+
+const Svg = ({ size = 16, children }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none"
+    stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"
+    aria-hidden="true">{children}</svg>
+);
+const UsbIcon = (p) => (<Svg {...p}><path d="M12 3v7" /><rect x="8" y="10" width="8" height="11" rx="2" /><path d="M12 15v2" /></Svg>);
+const FileIcon = (p) => (<Svg {...p}><path d="M6 2h8l4 4v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2Z" /><path d="M14 2v4h4" /></Svg>);
+const ZapIcon = (p) => (<Svg {...p}><path d="M13 2 4 14h6l-1 8 9-12h-6l1-8Z" /></Svg>);
+const ChipIcon = (p) => (<Svg {...p}><rect x="6" y="6" width="12" height="12" rx="2" /><path d="M9 2v4M15 2v4M9 18v4M15 18v4M2 9h4M2 15h4M18 9h4M18 15h4" /></Svg>);
+const AlertIcon = (p) => (<Svg {...p}><circle cx="12" cy="12" r="10" /><path d="M12 8v5" /><path d="M12 16.5v.01" /></Svg>);
+
+/* theme-toggle icons (inline strings — button lives in static titlebar HTML) */
+const ICON_SUN = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>';
+const ICON_MOON = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z"/></svg>';
 
 /* ── Main component ─────────────────────────────────────────────── */
 
@@ -61,6 +78,11 @@ function FlashTool() {
   const [busy, setBusy] = useState(false);
   const [flashed, setFlashed] = useState(false);   /* whether flashing completed this session */
   const [progress, setProgress] = useState(null); /* {pct, text} | null */
+  const [dragOver, setDragOver] = useState(false);
+  const [copied, setCopied] = useState(false);
+  /* theme: head script already set html[data-theme] before paint */
+  const [theme, setTheme] = useState(() =>
+    document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : 'light');
 
   const logRef = useRef(null);
   const loaderRef = useRef(null);
@@ -76,11 +98,31 @@ function FlashTool() {
     el.scrollTop = el.scrollHeight;
   }, []);
 
-  /* title-bar status dot follows connection state: idle = red breathing / connecting = amber blink / connected = steady green */
+  /* theme toggle button (static titlebar HTML, wired here) */
+  useEffect(() => {
+    const btn = document.getElementById('theme-toggle');
+    if (!btn) return;
+    btn.innerHTML = theme === 'dark' ? ICON_SUN : ICON_MOON;
+    const toggle = () => {
+      const next = theme === 'dark' ? 'light' : 'dark';
+      setTheme(next);
+      document.documentElement.setAttribute('data-theme', next);
+      try { localStorage.setItem('flash-theme', next); } catch (e) { /* ignore */ }
+    };
+    btn.addEventListener('click', toggle);
+    return () => btn.removeEventListener('click', toggle);
+  }, [theme]);
+
+  /* title-bar status dot + label follow connection state:
+   * idle = grey / connecting = amber blink / connected = steady green */
   useEffect(() => {
     const dot = document.querySelector('.titlebar .dot');
-    if (!dot) return;
-    dot.className = 'dot' + (conn === 'connecting' ? ' busy' : conn === 'connected' ? ' ok' : '');
+    if (dot) dot.className = 'dot' + (conn === 'connecting' ? ' busy' : conn === 'connected' ? ' ok' : '');
+    const label = document.getElementById('conn-state');
+    if (label) {
+      label.textContent = conn === 'connecting' ? '连接中…' : conn === 'connected' ? '已连接' : '未连接';
+      label.className = 'conn' + (conn === 'connecting' ? ' busy' : conn === 'connected' ? ' ok' : '');
+    }
   }, [conn]);
 
   const terminal = useMemo(() => ({
@@ -92,11 +134,85 @@ function FlashTool() {
   /* firmware source: firmware package zip (manual partition feature removed for now, may return later) */
   const hasFw = !!pkg;
 
+  const fmtSize = (n) => (n >= 1024 ? `${(n / 1024).toFixed(0)} KB` : `${n} B`);
+
+  /* one caption of what will be written — replaces scattered hints */
   const fwSummary = () => {
     if (!pkg) return '';
-    return `将烧写 ${pkg.entries.length} 个分区: ` +
-      pkg.entries.map((f) => `0x${f.address.toString(16)}`).join(', ');
+    const total = pkg.entries.reduce((s, f) => s + f.data.length, 0);
+    return `将写入 ${pkg.entries.length} 个分区，共 ${fmtSize(total)}`;
   };
+
+  async function applyFirmwareFile(file) {
+    if (!file) return;
+    setPkgError('');
+    setBanner(null);
+    setFlashed(false);     /* new firmware → flash flow restarts */
+    try {
+      const { entries, manifest } = await loadFirmwarePackage(file, log);
+      setPkg({ version: manifest.version, entries, settings: manifest.flash_settings ?? null });
+      log(`固件包 v${manifest.version} 加载完成（${entries.length} 个分区，SHA256 ✓）`);
+    } catch (err) {
+      setPkg(null);
+      setPkgError(`加载失败: ${err.message}`);
+      setBanner(`固件包加载失败: ${err.message}`);
+      log(`固件包加载失败: ${err.message}`, true);
+    }
+  }
+
+  function onPkgChange(e) {
+    const file = e.target.files?.[0];
+    e.target.value = '';   /* allow re-picking the same file */
+    applyFirmwareFile(file);
+  }
+
+  /* ── Log actions ─────────────────────────────────────────────── */
+
+  function onCopyLog(e) {
+    e.stopPropagation();   /* don't toggle the <details> via summary click */
+    const text = logRef.current?.innerText ?? '';
+    if (!text) return;
+    navigator.clipboard?.writeText(text)
+      .then(() => { setCopied(true); setTimeout(() => setCopied(false), 1500); })
+      .catch(() => {});
+  }
+
+  function onClearLog(e) {
+    e.stopPropagation();
+    if (logRef.current) logRef.current.innerHTML = '';
+  }
+
+  /* latest-state mirror for event listeners (closures see stale values) */
+  const stateRef = useRef({ conn: 'idle', busy: false, flashed: false, pct: 0 });
+  useEffect(() => {
+    stateRef.current = { conn, busy, flashed, pct: progress?.pct ?? 0 };
+  }, [conn, busy, flashed, progress]);
+
+  /* USB pulled / power cut mid-flash: Web Serial fires disconnect immediately.
+   * Detect it right away instead of waiting for esptool-js to hang or time out.
+   * Ignore when flashed (device hard_reset after write is an expected drop). */
+  const onSerialDisconnect = useCallback(() => {
+    const { conn, busy, flashed, pct } = stateRef.current;
+    if (conn === 'idle' || flashed) return;
+    log('USB 连接已断开', true);
+    setLogOpen(true);
+    setConn('idle');
+    setDev(null);
+    portRef.current = null;
+    loaderRef.current = null;
+    if (busy && pct < 100) {
+      setBusy(false);
+      setProgress((prev) => ({ pct: prev?.pct ?? 0, error: true, text: 'USB 已断开，烧写中断' }));
+      setBanner('烧写中断：USB 连接已断开，请重新连接设备后重试');
+    } else {
+      setBanner('USB 连接已断开');
+    }
+  }, [log]);
+
+  useEffect(() => {
+    navigator.serial?.addEventListener('disconnect', onSerialDisconnect);
+    return () => navigator.serial?.removeEventListener('disconnect', onSerialDisconnect);
+  }, [onSerialDisconnect]);
 
   /* ── Connect ─────────────────────────────────────────────────── */
 
@@ -114,12 +230,12 @@ function FlashTool() {
         chipType: 'esp32s3',
       });
       loaderRef.current = loader;
-      log('连接设备，等待 esptool-js 握手复位…');
+      log('正在连接设备…');
       await loader.main();   /* detect USJ PID → DTR/RTS handshake reset → connect */
       setConn('connected');
       setFlashed(false);
       setLogOpen(true);
-      log('连接成功 — 可以加载固件');
+      log('连接成功 — 可加载固件包');
       /* device info */
       const chip = loader.chip?.CHIP_NAME ?? 'ESP32-S3';
       let flashSize = '?';
@@ -148,7 +264,7 @@ function FlashTool() {
     setDev(null);
     setFlashed(false);
     setLogOpen(false);
-    log('已断开');
+    log('已断开连接');
   }
 
   /* flashing done: device rebooted via hard_reset, USB dropped — proactively end the connection.
@@ -168,23 +284,6 @@ function FlashTool() {
 
   /* ── Firmware ────────────────────────────────────────────────── */
 
-  async function onPkgChange(e) {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setPkgError('');
-    setBanner(null);
-    try {
-      const { entries, manifest } = await loadFirmwarePackage(file, log);
-      setPkg({ version: manifest.version, entries, settings: manifest.flash_settings ?? null });
-      log(`固件包 v${manifest.version} 加载完成，SHA256 校验通过`);
-    } catch (err) {
-      setPkg(null);
-      setPkgError(`加载失败: ${err.message}`);
-      setBanner(`固件包加载失败: ${err.message}`);
-      log(`固件包加载失败: ${err.message}`, true);
-    }
-  }
-
   async function collectFileArray() {
     if (!pkg) throw new Error('未选择固件包');
     return pkg.entries;
@@ -202,8 +301,7 @@ function FlashTool() {
     try {
       const fileArray = await collectFileArray();
       const total = fileArray.reduce((s, f) => s + f.data.length, 0);
-      log(`烧写 ${fileArray.length} 个分区: ` +
-        fileArray.map((f) => `0x${f.address.toString(16)}(${f.data.length}B)`).join(', '));
+      log(`开始烧写 ${fileArray.length} 个分区，共 ${(total / 1024).toFixed(0)} KB`);
 
       const fs = pkg?.settings ?? { flash_mode: 'dio', flash_freq: '80m', flash_size: '16MB' };
 
@@ -215,7 +313,14 @@ function FlashTool() {
         eraseAll: false,
         compress: true,
         reportProgress: (fileIndex, written, totalBytes) => {
-          const pct = totalBytes ? Math.round((written / totalBytes) * 100) : 0;
+          /* cumulative progress across partitions — esptool-js's totalBytes
+           * is per-file, so a raw written/totalBytes jumps 0→100% per part. */
+          const grandTotal = fileArray.reduce((s, f) => s + f.data.length, 0);
+          const doneBefore = fileArray.slice(0, fileIndex).reduce((s, f) => s + f.data.length, 0);
+          const frac = totalBytes ? written / totalBytes : 0;
+          const pct = grandTotal
+            ? Math.min(100, Math.round(((doneBefore + frac * fileArray[fileIndex].data.length) / grandTotal) * 100))
+            : 0;
           setProgress({
             pct,
             text: `写入分区 ${fileIndex + 1}/${fileArray.length}`,
@@ -224,12 +329,12 @@ function FlashTool() {
         calculateMd5Hash: true,
       });
       setProgress({ pct: 100, text: '校验完成，重启设备…' });
-      log(`写入 ${total} 字节完成，校验通过 ✓`);
+      log('写入完成，校验通过 ✓');
 
       /* official esp-web-tools pattern: pull RTS low to reset first, then release via after() */
       await loader.transport.setRTS(true);
       await loader.after('hard_reset');
-      log('设备已重启 — 应自动回到正常模式');
+      log('设备已重启，应回到正常模式');
       setFlashed(true);
       setProgress({ pct: 100, text: '烧写完成 ✓' });
       await finishAfterFlash();   /* device rebooted, USB dropped — end connection state */
@@ -250,7 +355,8 @@ function FlashTool() {
 
   if (!secureOk) {
     return (
-      <div id="noserial">
+      <div class="noserial">
+        <span class="noserial-ico"><AlertIcon size={34} /></span>
         <h2>无法在此页面使用烧写功能</h2>
         <p>网页烧写需要加密连接（HTTPS），当前页面不满足。</p>
         <p>请打开 <b>https://zhuyu1997.github.io/esp32-mac-nano/</b> 使用本工具。</p>
@@ -259,10 +365,11 @@ function FlashTool() {
   }
   if (!serialOk) {
     return (
-      <div id="noserial">
+      <div class="noserial">
+        <span class="noserial-ico"><AlertIcon size={34} /></span>
         <h2>此浏览器不支持网页烧写</h2>
-        <p>请用电脑上的 <b>Chrome</b> 或 <b>Edge</b> 浏览器打开本页。</p>
-        <p>手机浏览器、Safari、Firefox 均不支持。</p>
+        <p>请用电脑上的 <b>Chrome</b>、<b>Edge</b> 或 <b>Firefox</b>（151+）浏览器打开本页。</p>
+        <p>手机浏览器与 Safari 暂不支持。</p>
       </div>
     );
   }
@@ -271,68 +378,89 @@ function FlashTool() {
   const step2 = conn === 'connected' ? (hasFw ? 'done' : 'active') : '';
   const step3 = flashed
     ? 'done'
-    : conn === 'connected' && hasFw && !busy
+    : conn === 'connected' && hasFw
       ? 'active'
       : '';
 
-  const statusText =
-    conn === 'connecting' ? '连接中…' :
-    conn === 'connected' ? '已连接 ✓' : '未连接';
-  const statusCls =
-    conn === 'connecting' ? 'status busy' :
-    conn === 'connected' ? 'status ok' : 'status';
+  /* one status line under the flash button — state-driven, no scattered hints */
+  const flashNote =
+    busy ? '烧写中，请勿断开 USB 线' :
+    flashed ? '烧写完成，设备已重启进入正常模式' :
+    conn !== 'connected' ? '' :
+    !hasFw ? '请先完成步骤 2：选择固件包' :
+    fwSummary();
+  const flashNoteCls =
+    busy ? 'flash-note warn' :
+    flashed ? 'flash-note ok' :
+    conn === 'connected' && hasFw ? 'flash-note info' :
+    'flash-note';
 
   return (
     <div>
       {banner && <div id="banner" class="show">{banner}</div>}
 
-      {/* Step 1 */}
+      {/* Step 1 — connect: full-width button + one status line, same language as step 3 */}
       <div class={`step ${step1}`} id="step-connect">
-        <h2><span class="step-num">1</span>连接设备</h2>
-        <div class="row">
-          {conn !== 'connected' && (
-            <button onClick={connect} disabled={conn === 'connecting'}>连接设备</button>
-          )}
-          {conn === 'connected' && <button onClick={disconnect}>断开</button>}
-          <span class={statusCls}>{statusText}</span>
-        </div>
+        <h2><span class="step-num">{conn === 'connected' ? '✓' : '1'}</span>连接设备</h2>
+        {conn === 'connecting' ? (
+          <button class="flash-btn primary busy" disabled>连接中…</button>
+        ) : conn === 'connected' ? (
+          <button class="flash-btn" onClick={disconnect} disabled={busy}><UsbIcon size={15} />断开连接</button>
+        ) : (
+          <button class="flash-btn primary" onClick={connect}><UsbIcon size={15} />连接设备</button>
+        )}
         {dev && (
           <div class="dev-info">
-            Chip: <b>{dev.chip}</b><br />
-            Flash: <b>{dev.flash}</b>
+            <ChipIcon size={15} />芯片 <b>{dev.chip}</b> · Flash <b>{dev.flash}</b>
           </div>
         )}
-        <div class="hint">设备需处于 <b>Recover / Update</b> 模式（pause menu 右上角按钮，或开机按住按键）。</div>
       </div>
 
-      {/* Step 2 */}
+      {/* Step 2 — pick firmware: one clickable card, one state */}
       <div class={`step ${step2}`} id="step-firmware">
-        <h2><span class="step-num">2</span>选择固件</h2>
-        <div class="row">
-          <label for="pkg-file">固件包 (.zip)</label>
-          <span class="filepick">
-            <span class="pick-btn">选择固件包…</span>
-            <span class={`pick-name ${pkg ? 'picked' : ''}`}>{pkg ? `webflash-${pkg.version}.zip` : pkgError || '未选择'}</span>
-            <input type="file" accept=".zip,application/zip" id="pkg-file" onChange={onPkgChange} />
+        <h2><span class="step-num">{hasFw ? '✓' : '2'}</span>选择固件</h2>
+        <label
+          class={`drop${pkgError ? ' err' : pkg ? ' picked' : ''}${dragOver ? ' dragover' : ''}`}
+          title="选择固件包"
+          onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+          onDragLeave={() => setDragOver(false)}
+          onDrop={(e) => { e.preventDefault(); setDragOver(false); applyFirmwareFile(e.dataTransfer?.files?.[0]); }}
+        >
+          <span class="drop-ico"><FileIcon size={26} /></span>
+          <span class="drop-title">
+            {pkgError ? '固件包无效' : pkg ? `webflash-${pkg.version}.zip` : '选择固件包'}
           </span>
-        </div>
-        {!pkg && <div class="hint">选择 <code>webflash-&lt;版本&gt;.zip</code>（自动校验 SHA256 + 填好分区）。</div>}
+          <span class="drop-sub">
+            {pkgError ? pkgError :
+             pkg ? `版本 v${pkg.version} · ${pkg.entries.length} 个分区 · SHA256 校验通过 · 点击可更换` :
+             '点击浏览 webflash-<版本>.zip，自动校验 SHA256 与分区表'}
+          </span>
+          <input type="file" accept=".zip,application/zip" onChange={onPkgChange} />
+        </label>
         {pkg && (
-          <div class="hint">已加载固件包 v{pkg.version}（{pkg.entries.length} 个分区，SHA256 ✓）</div>
+          <div class="part-table">
+            <div class="part-row part-head">
+              <span>分区</span><span class="part-addr">地址</span><span class="part-size">大小</span>
+            </div>
+            {pkg.entries.map((f) => (
+              <div class="part-row">
+                <span class="part-name">{f.name}</span>
+                <span class="part-addr">0x{f.address.toString(16)}</span>
+                <span class="part-size">{fmtSize(f.data.length)}</span>
+              </div>
+            ))}
+          </div>
         )}
       </div>
 
-      {/* Step 3 */}
+      {/* Step 3 — flash */}
       <div class={`step ${step3}`} id="step-flash">
-        <h2><span class="step-num">3</span>烧写</h2>
-        <div class="row">
-          <button class="primary" onClick={flash}
-            disabled={!loaderRef.current || !hasFw || busy}>{busy ? '烧写中…' : '开始烧写'}</button>
-          <span class="hint" style={{ margin: 0 }}>
-            {fwSummary() ||
-              (conn === 'connected' ? '请先选择固件包' : '请先连接设备')}
-          </span>
-        </div>
+        <h2><span class="step-num">{flashed ? '✓' : '3'}</span>烧写固件</h2>
+        <button class="primary flash-btn" onClick={flash}
+          disabled={conn !== 'connected' || !hasFw || busy}>
+          {busy ? '烧写中…' : <><ZapIcon size={15} />开始烧写</>}
+        </button>
+        {flashNote && <div class={flashNoteCls}>{flashNote}</div>}
         {progress && (
           <>
             <div id="bar" class={progress.error ? 'error' : ''}>
@@ -346,9 +474,15 @@ function FlashTool() {
         )}
       </div>
 
-      {/* Log */}
+      {/* Log — 烧写操作日志，非设备串口日志 */}
       <details id="log-box" open={logOpen} onToggle={(e) => setLogOpen(e.target.open)}>
-        <summary>日志</summary>
+        <summary>
+          操作日志
+          <span class="log-actions">
+            <button class="log-btn" onClick={onCopyLog}>{copied ? '已复制' : '复制'}</button>
+            <button class="log-btn" onClick={onClearLog}>清空</button>
+          </span>
+        </summary>
         <div id="log" ref={logRef}></div>
       </details>
     </div>

@@ -4,326 +4,485 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Mac Nano ESP32 · 固件工具</title>
+  <script>
+    /* theme: manual choice wins; default follows system — set before paint to avoid flash */
+    (function () {
+      var saved = null;
+      try { saved = localStorage.getItem('flash-theme'); } catch (e) {}
+      var dark = saved === 'dark' || (saved === null && window.matchMedia('(prefers-color-scheme: dark)').matches);
+      document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
+      if (saved === null) {
+        try {
+          window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', function (e) {
+            if (!localStorage.getItem('flash-theme'))
+              document.documentElement.setAttribute('data-theme', e.matches ? 'dark' : 'light');
+          });
+        } catch (err) {}
+      }
+    })();
+  </script>
   <style>
+    /* Apple 设计语言 — 白底灰阶 + 单一蓝强调；全部变量化以支持深色模式 */
     :root {
-      --bg: #e7ebf2;
-      --ink: #2c3a52;
-      --muted: #7c8aa0;
-      --teal: #0ea5a4;
-      --teal-dk: #0d9488;
-      --indigo: #6366f1;
-      --indigo-dk: #4338ca;
-      --green: #059669;
+      --bg: #f5f5f7;
+      --line: #e5e5ea;
+      --ink: #1d1d1f;
+      --muted: #6e6e73;
+      --blue: #0071e3;
+      --tint-blue: rgba(0, 113, 227, 0.55);   /* 主按钮玻璃蓝 */
+      --tint-blue-hi: rgba(0, 113, 227, 0.68);
+      --tint-blue-press: rgba(0, 113, 227, 0.78);
+      --primary-ink: #ffffff;  /* 主按钮字 */
+      --bar-active: rgba(0, 113, 227, 0.65);   /* 步骤色条/徽标（玻璃状态色） */
+      --bar-done: rgba(52, 199, 89, 0.65);
+      --num-done: rgba(21, 122, 58, 0.72);
+      --blue-ink: #0071e3;
+      --green: #34c759;        /* 状态点 */
+      --green-ink: #157a3a;    /* 绿字（对比达标） */     /* 绿徽标底 */
       --red: #dc2626;
-      --amber: #d97706;
-      --shadow-dk: rgba(163, 177, 198, 0.55);
-      --shadow-lt: rgba(255, 255, 255, 0.95);
+      --amber: #ff9500;        /* 状态点 */
+      --amber-ink: #a16207;    /* 橙字（对比达标） */
+      --fill: rgba(255, 255, 255, 0.12);   /* 次级按钮/轨道/徽标底（玻璃） */
+      --fill-hover: rgba(255, 255, 255, 0.28);
+      --fill-press: rgba(255, 255, 255, 0.42);
+      --subtle: #f5f5f7;       /* noserial/dev-info/表头 */
+      --icon: #aeaeb2;
+      --dash: #d1d1d6;
+      --dot: #c7c7cc;
+      --disabled: #aeb0b5;
+      --banner-bg: #fff5f5;
+      --log-bg: rgba(255, 255, 255, 0.18);  /* 日志区（玻璃，比卡片实保可读） */
+      --dev-bg: rgba(255, 255, 255, 0.15);   /* 设备信息块 */
+      --code-bg: rgba(0, 0, 0, 0.05);
+      --drop-hover: rgba(0, 113, 227, 0.06);
+      --picked-bg: rgba(52, 199, 89, 0.1);
+      --err-bg: rgba(220, 38, 38, 0.08);
+      --glass-table: rgba(255, 255, 255, 0.2);   /* 分区表（比卡片实，保可读） */
+      --bar-fill: rgba(0, 113, 227, 0.7);       /* 进度条填充 */
+      --bar-fill-err: rgba(220, 38, 38, 0.7);
+      --glass: rgba(255, 255, 255, 0.12);  /* 毛玻璃窗底 */
+      --glass-border: rgba(255, 255, 255, 0.55);
+      --glass-hi: rgba(255, 255, 255, 0.7);
+      --glass-card: rgba(255, 255, 255, 0.08);  /* 内部卡片玻璃 */
+      --glass-card-blur: blur(8px) saturate(1.6);
+      --glass-card-active: rgba(255, 255, 255, 0.18);
+      --glow-a: rgba(0, 113, 227, 0.65);
+      --glow-b: rgba(52, 199, 89, 0.55);
+      --glow-c: rgba(120, 90, 210, 0.3);
+      --shadow: 0 2px 12px rgba(0, 0, 0, 0.06);
+      --shadow-window: 0 4px 24px rgba(0, 0, 0, 0.08);
+      --lift-1: 0 6px 16px rgba(0, 0, 0, 0.08);
+      --lift-2: 0 28px 60px rgba(0, 0, 0, 0.16);
+    }
+    :root[data-theme="dark"] {
+        --bg: #1c1c1e;
+        --line: #3a3a3c;
+        --ink: #f5f5f7;
+        --muted: #98989d;
+        --blue: #0a84ff;
+        --tint-blue: rgba(10, 132, 255, 0.55);
+        --tint-blue-hi: rgba(10, 132, 255, 0.68);
+        --tint-blue-press: rgba(10, 132, 255, 0.78);
+        --primary-ink: #ffffff;
+        --bar-active: rgba(10, 132, 255, 0.7);
+        --bar-done: rgba(48, 209, 88, 0.7);
+        --num-done: rgba(30, 142, 62, 0.8);
+        --blue-ink: #409cff;
+        --green: #30d158;
+        --green-ink: #4cd07e;
+        --red: #ff453a;
+        --amber: #ff9f0a;
+        --amber-ink: #f5b04c;
+        --fill: rgba(255, 255, 255, 0.05);
+        --fill-hover: rgba(255, 255, 255, 0.1);
+        --fill-press: rgba(255, 255, 255, 0.16);
+        --subtle: #232326;
+        --icon: #8e8e93;
+        --dash: #545458;
+        --dot: #8e8e93;
+        --disabled: #636366;
+        --banner-bg: #3a2525;
+        --log-bg: rgba(28, 28, 30, 0.25);
+        --dev-bg: rgba(28, 28, 30, 0.2);
+        --code-bg: rgba(255, 255, 255, 0.1);
+        --drop-hover: rgba(10, 132, 255, 0.1);
+        --picked-bg: rgba(48, 209, 88, 0.12);
+        --err-bg: rgba(255, 69, 58, 0.1);
+        --glass-table: rgba(28, 28, 30, 0.3);
+        --bar-fill: rgba(10, 132, 255, 0.7);
+        --bar-fill-err: rgba(255, 69, 58, 0.7);
+        --glass: rgba(28, 28, 30, 0.18);
+        --glass-border: rgba(255, 255, 255, 0.14);
+        --glass-hi: rgba(255, 255, 255, 0.12);
+        --glass-card: rgba(28, 28, 30, 0.12);
+        --glass-card-blur: blur(8px) saturate(1.6);
+        --glass-card-active: rgba(28, 28, 30, 0.25);
+        --glow-a: rgba(0, 122, 255, 0.55);
+        --glow-b: rgba(48, 209, 88, 0.45);
+        --glow-c: rgba(130, 100, 220, 0.32);
+        --shadow: 0 2px 12px rgba(0, 0, 0, 0.4);
+        --shadow-window: 0 4px 24px rgba(0, 0, 0, 0.55);
+        --lift-1: 0 6px 16px rgba(0, 0, 0, 0.45);
+        --lift-2: 0 28px 60px rgba(0, 0, 0, 0.6);
     }
     * { box-sizing: border-box; }
     html, body { margin: 0; }
     body {
-      font: 14px/1.6 -apple-system, "PingFang SC", "Hiragino Sans GB",
+      font: 14px/1.6 -apple-system, "SF Pro Text", "PingFang SC", "Hiragino Sans GB",
             "Microsoft YaHei", "Noto Sans SC", sans-serif;
       color: var(--ink);
-      min-height: 100vh; padding: 40px 16px;
+      min-height: 100vh; padding: 48px 16px;
       display: flex; justify-content: center;
-      background: var(--bg);
+      background:
+        radial-gradient(circle at 55% 45%, var(--glow-c), transparent 52%),
+        var(--bg);
+      transition: background 0.3s, color 0.3s;
     }
-    /* 技术元素保留等宽：地址 / 代码 / 日志 / 百分比 / 文件名 */
-    code, .addr, .pct, #log, .pick-name, .step-num {
+    /* 漂移光斑 — 缓慢移动，让毛玻璃后的背景有动态变化 */
+    body::before, body::after {
+      content: ""; position: fixed; z-index: -1; pointer-events: none;
+      width: 44vmax; height: 44vmax; border-radius: 50%;
+      animation:
+        glowDrift 18s ease-in-out infinite alternate,
+        glowHue 14s linear infinite;
+      will-change: transform, filter;
+    }
+    body::before {
+      top: -14vmax; right: -9vmax;
+      background: radial-gradient(circle, var(--glow-a), transparent 58%);
+    }
+    body::after {
+      bottom: -14vmax; left: -9vmax;
+      background: radial-gradient(circle, var(--glow-b), transparent 58%);
+      animation-delay: -9s;
+    }
+    @keyframes glowDrift {
+      from { transform: translate(0, 0) scale(1); }
+      to   { transform: translate(15vmax, 8vmax) scale(1.3); }
+    }
+    @keyframes glowHue {
+      0%, 100% { filter: hue-rotate(0deg); }
+      50%      { filter: hue-rotate(52deg); }
+    }
+    /* 技术元素保留等宽 */
+    code, .pct, #log, .step-num, .part-addr, .part-size {
       font-family: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
     }
     button, input { font: inherit; }
 
     /* ── 滚动条 ───────────────────────────────────────────────── */
-    ::-webkit-scrollbar { width: 9px; height: 9px; }
+    ::-webkit-scrollbar { width: 8px; height: 8px; }
     ::-webkit-scrollbar-track { background: transparent; }
-    ::-webkit-scrollbar-thumb {
-      background: var(--shadow-dk); border-radius: 5px;
-      border: 2px solid var(--bg); background-clip: content-box;
-    }
-    ::-webkit-scrollbar-thumb:hover { background-color: var(--teal); }
+    ::-webkit-scrollbar-thumb { background: var(--dot); border-radius: 4px; }
+    ::-webkit-scrollbar-thumb:hover { background: var(--muted); }
     ::-webkit-scrollbar-corner { background: transparent; }
 
     /* ── Window ───────────────────────────────────────────────── */
     .window {
-      width: 100%; max-width: 660px; align-self: flex-start;
-      background: var(--bg);
-      border-radius: 24px;
-      box-shadow:
-        14px 14px 30px var(--shadow-dk),
-        -14px -14px 30px var(--shadow-lt);
+      width: 100%; max-width: 640px; align-self: flex-start;
+      background: var(--glass);
+      -webkit-backdrop-filter: blur(20px) saturate(1.8);
+      backdrop-filter: blur(20px) saturate(1.8);
+      border: 1px solid var(--glass-border);
+      border-radius: 20px;
+      box-shadow: inset 0 1px 0 var(--glass-hi), var(--shadow-window);
       overflow: hidden;
       animation: windowIn 0.5s cubic-bezier(0.2, 0.9, 0.25, 1.05);
+      transition: background 0.3s, box-shadow 0.3s;
     }
     @keyframes windowIn { from { opacity: 0; transform: translateY(22px) scale(0.98); } }
     .titlebar {
-      display: flex; align-items: center; gap: 10px;
-      padding: 12px 18px;
-      background: var(--bg);
-      color: var(--teal-dk); font-size: 13px; font-weight: 700;
-      letter-spacing: 0.05em;
-      border-bottom: 1px solid rgba(163, 177, 198, 0.45);
+      display: flex; align-items: center; gap: 9px;
+      padding: 16px 20px 13px;
+      background: transparent;
+      color: var(--ink); font-size: 14px; font-weight: 600;
+      border-bottom: 1px solid var(--line);
     }
     .titlebar .dot {
-      width: 9px; height: 9px; border-radius: 50%; flex: none;
-      background: #f87171;
-      box-shadow: 0 0 8px rgba(248, 113, 113, 0.9);
+      width: 8px; height: 8px; border-radius: 50%; flex: none;
+      background: var(--dot);
       animation: dotBlink 2.4s ease-in-out infinite;
-      transition: background 0.3s, box-shadow 0.3s;
+      transition: background 0.3s;
     }
-    .titlebar .dot.busy { background: var(--amber); box-shadow: 0 0 8px rgba(217, 119, 6, 0.9); animation-duration: 0.9s; }
-    .titlebar .dot.ok { background: var(--green); box-shadow: 0 0 8px rgba(5, 150, 105, 0.9); animation: none; }
+    .titlebar .dot.busy { background: var(--amber); animation-duration: 0.9s; }
+    .titlebar .dot.ok { background: var(--green); animation: none; }
     @keyframes dotBlink { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
-    .titlebar .tag { margin-left: auto; font-size: 11px; color: var(--muted); }
-    .window-body { padding: 18px 18px 16px; }
-    .desc { margin: 0 0 13px; font-size: 13px; line-height: 1.6; color: var(--muted); }
+    .titlebar .conn { font-size: 12px; font-weight: 400; color: var(--muted); }
+    .titlebar .conn.busy { color: var(--amber-ink); }
+    .titlebar .conn.ok { color: var(--green-ink); }
+    .titlebar .tag { margin-left: auto; font-size: 11px; color: var(--muted); font-weight: 400; }
+    .titlebar .theme-toggle {
+      padding: 4px 5px; margin-left: 4px; border-radius: 7px;
+      background: transparent; color: var(--muted);
+      display: flex; align-items: center; justify-content: center;
+    }
+    .titlebar .theme-toggle:hover { background: var(--fill); color: var(--ink); }
+    .window-body { padding: 20px 20px 18px; }
+    .desc { margin: 0 0 24px; font-size: 13px; line-height: 1.6; color: var(--ink); }
     .desc b { color: var(--ink); }
+    .desc .desc-sub { display: block; margin-top: 3px; color: var(--muted); font-size: 12px; }
+    .desc .desc-sub b { color: var(--ink); }
 
-    /* ── Steps（浮雕卡片）────────────────────────────────────── */
+    /* ── Steps（白卡分区；当前步浮起 + 蓝条，无描边）────────── */
     .step {
       position: relative;
-      background: var(--bg);
+      background: var(--glass-card);
+      -webkit-backdrop-filter: var(--glass-card-blur);
+      backdrop-filter: var(--glass-card-blur);
       border-radius: 16px;
-      padding: 13px 14px 13px 20px; margin-bottom: 16px;
-      box-shadow:
-        6px 6px 14px var(--shadow-dk),
-        -6px -6px 14px var(--shadow-lt);
+      padding: 16px 16px 16px 22px; margin-bottom: 24px;
+      box-shadow: var(--shadow);
       animation: stepIn 0.4s ease both;
-      transition: box-shadow 0.25s;
+      transition: transform 0.25s ease, box-shadow 0.25s ease, background 0.3s;
+      z-index: 0;
     }
     .step:nth-child(1) { animation-delay: 0.08s; }
     .step:nth-child(2) { animation-delay: 0.16s; }
     .step:nth-child(3) { animation-delay: 0.24s; }
     @keyframes stepIn { from { opacity: 0; transform: translateY(14px); } }
-    .step::before {   /* 左侧色条 */
-      content: ""; position: absolute; left: 8px; top: 12px; bottom: 12px;
-      width: 4px; border-radius: 3px; background: var(--shadow-dk);
+    .step::before {   /* 左侧状态条 */
+      content: ""; position: absolute; left: 10px; top: 14px; bottom: 14px;
+      width: 3.5px; border-radius: 2px; background: transparent;
       transition: background 0.3s;
     }
+    /* 当前步骤：明显浮起 + 双层投影（无描边，Apple 式克制阴影） */
     .step.active {
-      box-shadow:
-        6px 6px 14px var(--shadow-dk),
-        -6px -6px 14px var(--shadow-lt),
-        0 0 0 1.5px rgba(99, 102, 241, 0.55),
-        0 6px 22px rgba(99, 102, 241, 0.18);
+      transform: translateY(-10px) scale(1.03);
+      z-index: 1;
+      background: var(--glass-card-active);
+      -webkit-backdrop-filter: var(--glass-card-blur);
+      backdrop-filter: var(--glass-card-blur);
+      box-shadow: var(--lift-1), var(--lift-2);
     }
-    .step.active::before { background: var(--indigo); }
-    .step.done {
-      box-shadow:
-        6px 6px 14px var(--shadow-dk),
-        -6px -6px 14px var(--shadow-lt),
-        0 0 0 1.5px rgba(5, 150, 105, 0.5);
-    }
-    .step.done::before { background: var(--green); }
+    .step.active::before { background: var(--bar-active); }
+    .step.done::before { background: var(--bar-done); }
     .step h2 {
-      font-size: 12px; text-transform: uppercase; letter-spacing: 0.12em;
-      color: var(--muted); margin: 0 0 10px; font-weight: 700;
+      display: flex; align-items: center;
+      font-size: 13px; font-weight: 600;
+      color: var(--ink); margin: 0 0 12px;
       transition: color 0.2s;
     }
-    .step.active h2 { color: var(--indigo-dk); }
-    .step.done h2 { color: var(--green); }
-    .step-num {
-      display: inline-block; width: 17px; height: 17px; line-height: 15px;
-      text-align: center; border: 1px solid currentColor; border-radius: 50%;
-      font-size: 11px; margin-right: 7px;
+    .step.active h2 { color: var(--blue-ink); }
+    .step.done h2 { color: var(--green-ink); }
+    .step-num {   /* iOS 圆形徽标 */
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 20px; height: 20px; border-radius: 50%;
+      background: var(--fill); color: var(--muted);
+      font-size: 11px; font-weight: 600; margin-right: 9px;
+      transition: background 0.2s, color 0.2s;
     }
-    .step.done .step-num { border-color: var(--green); color: var(--green); }
+    .step.active .step-num { background: var(--bar-active); color: #fff; }
+    .step.done .step-num { background: var(--num-done); color: #fff; }
 
     /* ── Controls ─────────────────────────────────────────────── */
-    .row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
-    .row label { min-width: 118px; color: var(--muted); font-size: 13px; }
-    .row .addr { min-width: 62px; color: var(--muted); font-size: 13px; }
     button {
-      padding: 8px 16px; font-size: 13px;
-      background: var(--bg);
-      border: none; border-radius: 11px;
+      padding: 8px 18px; font-size: 13px;
+      background: var(--fill);
+      border: none; border-radius: 9px;
       color: var(--ink); cursor: pointer;
-      box-shadow:
-        4px 4px 10px var(--shadow-dk),
-        -4px -4px 10px var(--shadow-lt);
-      transition: all 0.15s ease;
+      transition: background 0.15s, color 0.15s;
     }
-    button:hover:not(:disabled) {
-      color: var(--teal-dk);
-      box-shadow:
-        5px 5px 12px var(--shadow-dk),
-        -5px -5px 12px var(--shadow-lt),
-        0 0 14px rgba(14, 165, 164, 0.16);
-    }
-    button:active:not(:disabled) {
-      box-shadow:
-        inset 3px 3px 7px var(--shadow-dk),
-        inset -3px -3px 7px var(--shadow-lt);
-      transform: translateY(1px);
-    }
+    button:hover:not(:disabled) { background: var(--fill-hover); }
+    button:active:not(:disabled) { background: var(--fill-press); transform: translateY(1px); }
     button:disabled {
       cursor: not-allowed;
-      color: rgba(44, 58, 82, 0.35);
-      box-shadow:
-        inset 2px 2px 6px var(--shadow-dk),
-        inset -2px -2px 6px var(--shadow-lt);
+      color: var(--disabled);
+      background: var(--fill);
     }
     button.primary {
-      background: var(--bg);
-      color: var(--teal-dk); font-weight: 700;
-      box-shadow:
-        4px 4px 10px rgba(14, 165, 164, 0.3),
-        -4px -4px 10px var(--shadow-lt);
+      background: var(--tint-blue);
+      color: var(--primary-ink); font-weight: 600;
     }
-    button.primary:hover:not(:disabled) {
-      color: var(--teal-dk);
-      box-shadow:
-        5px 5px 12px rgba(14, 165, 164, 0.45),
-        -5px -5px 12px var(--shadow-lt),
-        0 0 0 1.5px rgba(14, 165, 164, 0.5);
-    }
-    button.primary:active:not(:disabled) {
-      box-shadow:
-        inset 3px 3px 8px rgba(14, 165, 164, 0.28),
-        inset -3px -3px 8px var(--shadow-lt);
-    }
+    button.primary:hover:not(:disabled) { background: var(--tint-blue-hi); color: var(--primary-ink); }
+    button.primary:active:not(:disabled) { background: var(--tint-blue-press); color: var(--primary-ink); }
     button.primary:disabled {
-      color: rgba(13, 148, 136, 0.45);
-      box-shadow:
-        inset 2px 2px 6px var(--shadow-dk),
-        inset -2px -2px 6px var(--shadow-lt);
+      background: var(--fill-hover);
+      color: var(--disabled);
     }
-    input[type="text"] {
-      padding: 6px 9px; border: none; border-radius: 9px;
-      background: var(--bg); color: var(--ink); width: 160px;
-      box-shadow:
-        inset 3px 3px 7px var(--shadow-dk),
-        inset -3px -3px 7px var(--shadow-lt);
+    /* 连接中：保持蓝底脉动 */
+    button.primary:disabled.busy {
+      background: var(--tint-blue); color: var(--primary-ink);
+      animation: pulseBtn 1.2s ease-in-out infinite;
     }
-    .hint { color: var(--muted); font-size: 12px; margin-top: 6px; line-height: 1.5; }
-    .hint code { background: rgba(44, 58, 82, 0.07); padding: 0 3px; border-radius: 3px; }
-    .hint b { color: var(--ink); }
+    @keyframes pulseBtn { 0%, 100% { background: var(--tint-blue); } 50% { background: var(--tint-blue-hi); } }
 
-    /* ── Styled file picker ───────────────────────────────────── */
-    .filepick { position: relative; display: inline-flex; align-items: center; gap: 8px; }
-    .filepick .pick-btn {
-      padding: 8px 16px; font-size: 13px; white-space: nowrap;
-      background: var(--bg); color: var(--ink); border: none; border-radius: 11px;
-      box-shadow:
-        4px 4px 10px var(--shadow-dk),
-        -4px -4px 10px var(--shadow-lt);
-      transition: all 0.15s ease; cursor: pointer;
+    /* ── Firmware picker（白卡虚线 + 居中图标；支持拖拽）──────── */
+    .drop {
+      position: relative; display: flex; flex-direction: column; align-items: center; gap: 4px;
+      padding: 22px 14px; border-radius: 14px; cursor: pointer;
+      background: var(--glass-card);
+      -webkit-backdrop-filter: var(--glass-card-blur);
+      backdrop-filter: var(--glass-card-blur);
+      border: 1.5px dashed var(--dash);
+      text-align: center;
+      transition: border-color 0.15s, background 0.15s;
     }
-    .filepick:hover .pick-btn {
-      color: var(--teal-dk);
-      box-shadow:
-        5px 5px 12px var(--shadow-dk),
-        -5px -5px 12px var(--shadow-lt),
-        0 0 14px rgba(14, 165, 164, 0.16);
+    .drop:hover { border-color: var(--blue); background: var(--drop-hover); }
+    .drop.dragover {
+      border-style: solid;
+      border-color: var(--blue);
+      background: var(--drop-hover);
+      box-shadow: 0 0 0 2px var(--blue);
     }
-    .filepick input[type="file"] {
+    .drop.picked {
+      border-style: solid;
+      border-color: var(--green);
+      background: var(--picked-bg);
+    }
+    .drop.err {
+      border-style: solid;
+      border-color: var(--red);
+      background: var(--err-bg);
+    }
+    .drop input[type="file"] {
       position: absolute; inset: 0; opacity: 0; cursor: pointer;
       width: 100%; height: 100%;
     }
-    .pick-name {
-      font-size: 12px; color: var(--muted);
-      max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-    }
-    .pick-name.picked { color: var(--green); }
+    .drop-ico { margin-bottom: 4px; color: var(--icon); line-height: 0; }
+    .drop.picked .drop-ico { color: var(--green); }
+    .drop.err .drop-ico { color: var(--red); }
+    .drop-title { font-size: 15px; font-weight: 600; color: var(--ink); }
+    .drop.picked .drop-title { color: var(--green-ink); }
+    .drop.err .drop-title { color: var(--red); }
+    .drop-sub { font-size: 12px; color: var(--muted); line-height: 1.5; }
+    .drop-sub code { background: var(--code-bg); padding: 0 4px; border-radius: 4px; }
+    .drop.err .drop-sub { color: var(--red); }
 
-    /* ── Status / banner / device ─────────────────────────────── */
-    .status { margin-left: auto; font-size: 13px; color: var(--muted); display: flex; align-items: center; gap: 6px; }
-    .status::before {
-      content: ""; width: 8px; height: 8px; border-radius: 50%;
-      background: var(--shadow-dk); transition: background 0.3s;
+    /* ── Partition detail table（无边框分区，隔行底色）────────── */
+    .part-table {
+      margin-top: 12px;
+      border: 1px solid var(--line); border-radius: 12px; overflow: hidden;
+      background: var(--glass-table);
+      -webkit-backdrop-filter: var(--glass-card-blur);
+      backdrop-filter: var(--glass-card-blur);
+      animation: stepIn 0.3s ease;
     }
-    .status.busy::before { background: var(--amber); animation: dotBlink 0.9s ease-in-out infinite; }
-    .status.ok { color: var(--green); }
-    .status.ok::before { background: var(--green); box-shadow: 0 0 7px rgba(5, 150, 105, 0.7); }
-    .status.err { color: var(--red); }
-    .status.err::before { background: var(--red); box-shadow: 0 0 7px rgba(220, 38, 38, 0.7); }
+    .part-row {
+      display: grid; grid-template-columns: 1fr auto auto; gap: 8px;
+      padding: 7px 12px; font-size: 12px; align-items: center;
+    }
+    .part-row + .part-row { border-top: 1px solid var(--line); }
+    .part-head {
+      background: var(--subtle);
+      color: var(--muted); font-size: 11px;
+    }
+    .part-name { color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .part-addr { color: var(--muted); min-width: 84px; }
+    .part-size { color: var(--muted); min-width: 52px; text-align: right; }
+
+    /* ── Flash CTA（胶囊主按钮 + 单行状态）───────────────────── */
+    .flash-btn {
+      display: flex; align-items: center; justify-content: center; gap: 8px;
+      width: 100%; padding: 13px 16px; font-size: 14px;
+      border-radius: 980px;
+    }
+    .flash-note {
+      margin-top: 9px;
+      font-size: 12px; line-height: 1.5; text-align: center;
+      color: var(--muted);
+      display: flex; align-items: center; justify-content: center; gap: 7px;
+    }
+    .flash-note.info { color: var(--blue-ink); }
+    .flash-note.ok { color: var(--green-ink); }
+    .flash-note.warn { color: var(--amber-ink); }
+
+    /* ── Unsupported browser / non-secure context ──────────────── */
+    .noserial {
+      background: var(--glass-card);
+      -webkit-backdrop-filter: var(--glass-card-blur);
+      backdrop-filter: var(--glass-card-blur);
+      border-radius: 16px; padding: 28px 20px;
+      display: flex; flex-direction: column; align-items: center; text-align: center;
+    }
+    .noserial-ico { color: var(--icon); margin-bottom: 10px; line-height: 0; }
+    .noserial h2 { margin: 0 0 10px; font-size: 15px; color: var(--ink); }
+    .noserial p { margin: 0 0 8px; font-size: 13px; line-height: 1.7; color: var(--muted); }
+    .noserial p:last-child { margin-bottom: 0; }
+    .noserial b { color: var(--ink); }
+
+    /* ── Banner / device ──────────────────────────────────────── */
     #banner {
       display: none;
       position: relative;
-      color: #b91c1c;
-      background: var(--bg);
-      padding: 9px 12px 9px 18px;
+      color: var(--red);
+      background: var(--banner-bg);
+      padding: 10px 12px 10px 20px;
       border-radius: 12px;
-      margin-bottom: 13px; font-size: 13px;
-      box-shadow:
-        inset 3px 3px 8px rgba(220, 38, 38, 0.16),
-        inset -3px -3px 8px var(--shadow-lt),
-        0 0 0 1.5px rgba(220, 38, 38, 0.45);
+      margin-bottom: 14px; font-size: 13px;
       animation: stepIn 0.3s ease;
     }
-    #banner::before {   /* 左侧红条（同步骤卡色条语言） */
-      content: ""; position: absolute; left: 8px; top: 10px; bottom: 10px;
-      width: 4px; border-radius: 3px; background: var(--red);
+    #banner::before {
+      content: ""; position: absolute; left: 10px; top: 11px; bottom: 11px;
+      width: 3.5px; border-radius: 2px; background: var(--red);
     }
     #banner.show { display: block; }
     .dev-info {
-      margin-top: 8px; padding: 9px 12px;
-      background: var(--bg); border-radius: 11px;
+      margin-top: 10px; padding: 10px 12px;
+      display: flex; align-items: center; gap: 8px;
+      background: var(--dev-bg);
+      border-radius: 10px;
       font-size: 13px; line-height: 1.7;
-      box-shadow:
-        inset 3px 3px 8px var(--shadow-dk),
-        inset -3px -3px 8px var(--shadow-lt);
       animation: stepIn 0.35s ease;
     }
-    .dev-info b { color: var(--teal-dk); }
+    .dev-info svg { color: var(--icon); }
+    .dev-info b { color: var(--ink); }
 
-    /* ── Progress（凹陷轨道）─────────────────────────────────── */
+    /* ── Progress（细轨道，无边框）───────────────────────────── */
     #bar {
-      height: 14px; border-radius: 7px; overflow: hidden; margin: 10px 0 6px;
-      background: var(--bg);
-      box-shadow:
-        inset 3px 3px 8px var(--shadow-dk),
-        inset -3px -3px 8px var(--shadow-lt);
+      height: 6px; border-radius: 3px; overflow: hidden; margin: 12px 0 7px;
+      background: var(--fill);
     }
     #bar > div {
-      height: 100%; width: 0; border-radius: 7px;
-      background: var(--teal);
-      box-shadow: 0 0 10px rgba(14, 165, 164, 0.4);
+      height: 100%; width: 0; border-radius: 3px;
+      background: var(--bar-fill);
       transition: width 0.15s ease;
     }
-    #bar.error { box-shadow: inset 3px 3px 8px var(--shadow-dk), inset -3px -3px 8px var(--shadow-lt), 0 0 0 1.5px rgba(220, 38, 38, 0.5); }
-    #bar.error > div { background: var(--red); box-shadow: 0 0 10px rgba(220, 38, 38, 0.5); }
+    #bar.error > div { background: var(--bar-fill-err); }
     #progress-label { font-size: 12px; color: var(--muted); min-height: 18px; }
     #progress-label.error { color: var(--red); }
-    #progress-label .pct { color: var(--teal-dk); font-weight: 700; }
+    #progress-label .pct { color: var(--blue-ink); font-weight: 600; }
 
     /* ── Log ──────────────────────────────────────────────────── */
-    details#log-box { margin-top: 6px; border-radius: 14px; overflow: hidden;
-      box-shadow:
-        inset 3px 3px 8px var(--shadow-dk),
-        inset -3px -3px 8px var(--shadow-lt); }
+    details#log-box { margin-top: 8px; border: 1px solid var(--line); border-radius: 12px; overflow: hidden;
+      background: var(--glass-card);
+      -webkit-backdrop-filter: var(--glass-card-blur);
+      backdrop-filter: var(--glass-card-blur); }
     details#log-box summary {
-      padding: 8px 12px; cursor: pointer; font-size: 12px;
-      text-transform: uppercase; letter-spacing: 0.12em; color: var(--muted);
+      display: flex; align-items: center;
+      padding: 9px 12px; cursor: pointer; font-size: 12px;
+      color: var(--muted);
       user-select: none;
     }
     details#log-box summary:hover { color: var(--ink); }
+    .log-actions { margin-left: auto; display: flex; gap: 6px; }
+    .log-btn {
+      padding: 2px 10px; font-size: 11px; border-radius: 6px;
+      background: var(--fill); color: var(--muted);
+    }
+    .log-btn:hover { background: var(--fill-hover); color: var(--ink); }
     #log {
-      background: rgba(44, 58, 82, 0.04);
-      color: var(--ink); border-top: 1px solid rgba(44, 58, 82, 0.06);
+      background: var(--log-bg);
+      color: var(--ink); border-top: 1px solid var(--line);
       padding: 10px 12px;
       height: 180px; overflow-y: auto; font-size: 12px; white-space: pre-wrap;
     }
     #log .err { color: var(--red); }
-    #log .ok { color: var(--green); }
+    #log .ok { color: var(--green-ink); }
 
-    /* ── DIY / advanced ───────────────────────────────────────── */
-    details.advanced { margin-top: 10px; }
-    details.advanced summary { cursor: pointer; font-size: 12px; color: var(--muted); user-select: none; transition: color 0.2s; }
-    details.advanced summary:hover { color: var(--ink); }
-    details.advanced[open] summary { color: var(--teal-dk); }
-    .diy-del { padding: 3px 9px; }
   </style>
 </head>
 <body>
   <div class="window">
     <div class="titlebar">
       <span class="dot"></span> Mac Nano ESP32
-      <span class="tag">固件升级 / 恢复 · 仅 Chrome/Edge</span>
+      <span class="conn" id="conn-state">未连接</span>
+      <span class="tag">固件升级 / 恢复 · 需桌面 Chrome/Edge/Firefox</span>
+      <button class="theme-toggle" id="theme-toggle" title="切换主题" aria-label="切换主题"></button>
     </div>
     <div class="window-body">
-      <p class="desc">通过 <b>USB 数据线</b>升级固件或恢复设备，一键烧写。</p>
+      <p class="desc">通过 <b>USB 数据线</b>升级固件或恢复设备，三步完成。
+        <span class="desc-sub">开始前：让设备进入 <b>恢复/更新</b> 模式——设置界面右上角，或开机时按住机身按键。</span>
+      </p>
       <div id="app"></div>
     </div>
   </div>
