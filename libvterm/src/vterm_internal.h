@@ -121,6 +121,7 @@ struct VTermState
     unsigned int leftrightmargin:1;
     unsigned int bracketpaste:1;
     unsigned int report_focus:1;
+    unsigned int syncout:1;
   } mode;
 
   VTermEncodingInstance encoding[4], encoding_utf8;

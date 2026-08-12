@@ -862,6 +862,10 @@ static void set_dec_mode(VTermState *state, int num, int val)
     state->mode.bracketpaste = val;
     break;
 
+  case 2026: // Synchronized output (xterm/kitty)
+    settermprop_bool(state, VTERM_PROP_SYNCOUTPUT, val);
+    break;
+
   default:
     DEBUG_LOG("libvterm: Unknown DEC mode %d\n", num);
     return;
@@ -2229,6 +2233,9 @@ int vterm_state_set_termprop(VTermState *state, VTermProp prop, VTermValue *val)
     return 1;
   case VTERM_PROP_CURSORBLINK:
     state->mode.cursor_blink = val->boolean;
+    return 1;
+  case VTERM_PROP_SYNCOUTPUT:
+    state->mode.syncout = val->boolean;
     return 1;
   case VTERM_PROP_CURSORSHAPE:
     state->mode.cursor_shape = val->number;
