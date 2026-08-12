@@ -22,6 +22,30 @@
 
 #define ARRAY_8_WITH_SIZE(...) (uint8_t[]){__VA_ARGS__}, sizeof((uint8_t[]){__VA_ARGS__})
 
+/*
+ * 0xC3 RGBCTRL is the authority for the RGB HV-mode porches on this
+ * panel (D200N2409V0, ST7701S). Fields per ST7701S_SPEC_V1.4 §12.3.2.10:
+ *
+ *   C300h: DE/HV=1 (HV mode; DE pin is grounded — module datasheet
+ *          "DE Low: access enabled, when not in use: Power Ground"),
+ *          VSP=0 (VSYNC low active), HSP=0 (HSYNC low active),
+ *          DP=1 (data latched on DOTCLK falling edge),
+ *          EP=1 (DE low active, unused in HV mode).
+ *   C301h: HBP_HVRGB = 0x33 = 51  (Hsync back porch, INCLUDES hsync pulse)
+ *   C302h: VBP_HVRGB = 0x1b = 27  (Vsync back porch, INCLUDES vsync pulse)
+ *
+ * In HV mode the timing chart labels the back porch as (Thpw+Thbp) /
+ * (Tvs+Tvbp), i.e. it already contains the sync pulse. ESP-IDF's
+ * *_back_porch, however, excludes the pulse (pulse width is a separate
+ * field). So the dtree values must be:
+ *
+ *   hsync_back_porch = 51 - 2 = 49
+ *   vsync_back_porch = 27 - 2 = 25
+ *
+ * The front porches are not fixed by the panel in HV mode (the IC derives
+ * them from the frame timing), so hsync_front_porch / vsync_front_porch
+ * only need to produce a ~60 Hz frame.
+ */
 static const st7701_lcd_init_cmd_t lcd_init_cmds[] = {
         {0xFF, ARRAY_8_WITH_SIZE(0x77, 0x01, 0x00, 0x00, 0x13), 0},
         {0xEF, ARRAY_8_WITH_SIZE(0x08), 0},

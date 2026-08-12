@@ -52,10 +52,10 @@
     "bounce_lines": 16,
 
     "hsync_pulse_width": 2,
-    "hsync_back_porch": 51,
+    "hsync_back_porch": 49,
     "hsync_front_porch": 32,
     "vsync_pulse_width": 2,
-    "vsync_back_porch": 27,
+    "vsync_back_porch": 25,
     "vsync_front_porch": 12,
 
     "hsync_idle_low": false,
