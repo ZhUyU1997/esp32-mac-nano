@@ -72,7 +72,7 @@ static const uint8_t *unicode_glyph(uint32_t cp)
 /* paint a 16x16 glyph starting at cell (row, col): it spans two
  * cell columns (8 px each). Returns true if painted. */
 static bool paint_cjk(term_renderer_t *r, int row, int col, uint32_t cp,
-                      uint32_t on, uint32_t off)
+                      uint32_t on)
 {
 	const uint8_t *g = unicode_glyph(cp);
 	if (!g)
@@ -83,8 +83,8 @@ static bool paint_cjk(term_renderer_t *r, int row, int col, uint32_t cp,
 		uint8_t lo = g[gy * 2], hi = g[gy * 2 + 1];
 		for (int gx = 0; gx < 16; gx++) {
 			uint8_t byte = (gx < 8) ? lo : hi;
-			bool set = (byte >> (7 - (gx & 7))) & 1;
-			r->pixels[(py0 + gy) * r->win_w + (px0 + gx)] = set ? on : off;
+			if ((byte >> (7 - (gx & 7))) & 1)
+				r->pixels[(py0 + gy) * r->win_w + (px0 + gx)] = on;
 		}
 	}
 	return true;
@@ -128,7 +128,7 @@ static const uint8_t *emoji_glyph(uint32_t cp)
 
 /* paint a full-width 16x16 emoji spanning two cell columns */
 static bool paint_emoji(term_renderer_t *r, int row, int col, uint32_t cp,
-                        uint32_t on, uint32_t off)
+                        uint32_t on)
 {
 	const uint8_t *g = emoji_glyph(cp);
 	if (!g)
@@ -139,8 +139,8 @@ static bool paint_emoji(term_renderer_t *r, int row, int col, uint32_t cp,
 		uint8_t lo = g[gy * 2], hi = g[gy * 2 + 1];
 		for (int gx = 0; gx < 16; gx++) {
 			uint8_t byte = (gx < 8) ? lo : hi;
-			bool set = (byte >> (7 - (gx & 7))) & 1;
-			r->pixels[(py0 + gy) * r->win_w + (px0 + gx)] = set ? on : off;
+			if ((byte >> (7 - (gx & 7))) & 1)
+				r->pixels[(py0 + gy) * r->win_w + (px0 + gx)] = on;
 		}
 	}
 	return true;
@@ -156,53 +156,25 @@ static bool is_space_cp(uint32_t cp)
 }
 
 /* paint one cell (row r, col c) into the pixel buffer */
-static bool is_wide_glyph_cp(uint32_t cp)
+/* read a cell through the renderer's source (live screen or scrollback). */
+static bool get_render_cell(const term_renderer_t *r, int row, int col, VTermScreenCell *cell)
 {
-	/* 16x16 symbols and emoji render 16px wide even when layout width is
-	 * 1; 8x16 glyphs fit their cell exactly */
-	if (emoji_glyph(cp))
-		return true;
-	int sw = 1;
-	if (symbol_glyph(cp, &sw) != NULL)
-		return sw >= 2;
-	return false;
-}
-
-/* Unicode whitespace: blank cell, honouring double-width (U+3000).
- * A cell covered by a wide glyph's overflow (wide_occ) is left alone so
- * the 16px glyph stays visible. */
-static void paint_blank(term_renderer_t *r, int row, int col, int px0, int py0,
-                        int w, uint32_t on_b, uint32_t off_b, bool covered)
-{
-	if (covered)
-		return;
-	for (int y = 0; y < TERM_CELL_H; y++)
-		for (int x = 0; x < w * TERM_CELL_W; x++)
-		r->pixels[(py0 + y) * r->win_w + (px0 + x)] = off_b;
-}
-
-/* paint a single cell.  wide_occ[col] is true when a preceding wide glyph
- * (16px render with 1-cell layout) already painted into this column. */
-static void paint_cell(term_renderer_t *r, int row, int col, const bool *wide_occ)
-{
-	VTermScreenCell cell;
-	bool have = false;
-
 	if (r->scroll_offset > 0 && row < r->scroll_offset) {
-		/* scrollback region: host storage, most recent line on top */
 		int sb_row = r->scroll_offset - 1 - row;
-		if (r->sb_get_cell && r->sb_get_cell(r->sb_user, sb_row, col, &cell))
-			have = true;
-	} else if (row >= r->scroll_offset) {
-		VTermPos pos = { .row = row - r->scroll_offset, .col = col };
-		have = vterm_screen_get_cell(r->screen, pos, &cell);
+		return r->sb_get_cell && r->sb_get_cell(r->sb_user, sb_row, col, cell);
 	}
-	if (!have)
-		memset(&cell, 0, sizeof(cell)); /* blank */
+	VTermPos p = { .row = row - r->scroll_offset, .col = col };
+	return vterm_screen_get_cell(r->screen, p, cell);
+}
 
-	VTermColor fg = cell.fg, bg = cell.bg;
+/* compute on/off colours (fg/bg, bold, reverse, selection, block cursor).
+ * on = glyph colour, off = background. */
+static void cell_style(term_renderer_t *r, int row, int col, const VTermScreenCell *cell,
+                       bool *cursor_here, bool *cur_block, uint32_t *on_b, uint32_t *off_b)
+{
+	VTermColor fg = cell->fg, bg = cell->bg;
 	/* bold maps palette 0-7 to 8-15 (xterm default boldColor) */
-	if (cell.attrs.bold && VTERM_COLOR_IS_INDEXED(&fg) && fg.indexed.idx < 8)
+	if (cell->attrs.bold && VTERM_COLOR_IS_INDEXED(&fg) && fg.indexed.idx < 8)
 		fg.indexed.idx += 8;
 	vterm_state_convert_color_to_rgb(r->state, &fg);
 	vterm_state_convert_color_to_rgb(r->state, &bg);
@@ -212,18 +184,18 @@ static void paint_cell(term_renderer_t *r, int row, int col, const bool *wide_oc
 	 * 1 block, 2 underline, 3 bar-left. Blink: once an app issued
 	 * DECSCUSR we honour its steady/blink bit; before that (plain shell
 	 * prompt) the cursor blinks by default, as on VT100s. */
-	bool cursor_here = r->scroll_offset == 0 && r->cursor_visible &&
+	*cursor_here = r->scroll_offset == 0 && r->cursor_visible &&
 		row == r->cursor.row && col == r->cursor.col;
-	if (cursor_here) {
+	if (*cursor_here) {
 		if (r->cursor_shape == 0)
 			r->cursor_shape = VTERM_PROP_CURSORSHAPE_BLOCK;
 		bool blink = r->cursor_shape_set ? (r->cursor_blink != 0) : true;
 		if (blink && !r->blink_on)
-			cursor_here = false; /* blink dark phase */
+			*cursor_here = false; /* blink dark phase */
 	}
 
-	uint32_t on = cell.attrs.reverse ? color_to_u32(&bg) : color_to_u32(&fg);
-	uint32_t off = cell.attrs.reverse ? color_to_u32(&fg) : color_to_u32(&bg);
+	uint32_t on = cell->attrs.reverse ? color_to_u32(&bg) : color_to_u32(&fg);
+	uint32_t off = cell->attrs.reverse ? color_to_u32(&fg) : color_to_u32(&bg);
 
 	/* mouse selection: streaming highlight — first/last rows are clipped
 	 * by the anchor/cur columns, interior rows run to the last non-blank
@@ -257,29 +229,55 @@ static void paint_cell(term_renderer_t *r, int row, int col, const bool *wide_oc
 		off = tmp;
 	}
 	/* block cursor: full-cell inversion. Underline/bar shapes are handled
-	 * per-pixel in the glyph loop below. CJK/placeholder paths get the
-	 * block-inverted pair (block behaviour only). */
-	bool cur_block = cursor_here && r->cursor_shape == VTERM_PROP_CURSORSHAPE_BLOCK;
-	uint32_t on_b = cur_block ? off : on;
-	uint32_t off_b = cur_block ? on : off;
+	 * per-pixel in the glyph loop. */
+	*cur_block = *cursor_here && r->cursor_shape == VTERM_PROP_CURSORSHAPE_BLOCK;
+	*on_b = *cur_block ? off : on;
+	*off_b = *cur_block ? on : off;
+}
 
-	if (cell.width == 0)
-		return; /* continuation cell */
-	if (cell.chars[0] == (uint32_t)-1)
-		return; /* gap behind a double-width char */
+/* pass 1: background — spans exactly the layout width, like a real
+ * terminal.  Wide glyphs (16px render, 1-cell layout) never bleed their
+ * background into the next cell. */
+static void paint_background(term_renderer_t *r, int row, int col)
+{
+	VTermScreenCell cell;
+	if (!get_render_cell(r, row, col, &cell))
+		memset(&cell, 0, sizeof(cell)); /* blank */
+	if (cell.chars[0] == (uint32_t)-1 || cell.width == 0)
+		return; /* gap/continuation: covered by the anchor cell's width */
+	bool cursor_here, cur_block;
+	uint32_t on_b, off_b;
+	cell_style(r, row, col, &cell, &cursor_here, &cur_block, &on_b, &off_b);
+	int w = (cell.width >= 2) ? 2 : 1;
+	const int px0 = col * TERM_CELL_W;
+	const int py0 = row * TERM_CELL_H;
+	for (int y = 0; y < TERM_CELL_H; y++)
+		for (int x = 0; x < w * TERM_CELL_W; x++)
+			r->pixels[(py0 + y) * r->win_w + (px0 + x)] = off_b;
+}
+
+/* pass 2: glyph — natural width (8px or 16px).  Only on-pixels are
+ * written; the background pass already filled the cell. */
+static void paint_glyph(term_renderer_t *r, int row, int col)
+{
+	VTermScreenCell cell;
+	if (!get_render_cell(r, row, col, &cell))
+		memset(&cell, 0, sizeof(cell)); /* blank */
+	if (cell.chars[0] == (uint32_t)-1 || cell.width == 0)
+		return;
+	bool cursor_here, cur_block;
+	uint32_t on_b, off_b;
+	cell_style(r, row, col, &cell, &cursor_here, &cur_block, &on_b, &off_b);
 
 	uint32_t cp = cell.chars[0];
 	if (cp == 0)
 		cp = ' ';
-
-	uint8_t idx = term_unicode_to_cp437(cp);
 	const int px0 = col * TERM_CELL_W;
 	const int py0 = row * TERM_CELL_H;
 
 	/* Unicode whitespace: blank cell, honouring double-width (U+3000) */
 	if (is_space_cp(cp)) {
 		int w = (cell.width >= 2) ? 2 : 1;
-		paint_blank(r, row, col, px0, py0, w, on_b, off_b, wide_occ[col]);
 		/* underline/strike still apply to blank cells */
 		if (cell.attrs.underline)
 			for (int x = 0; x < w * TERM_CELL_W; x++)
@@ -290,103 +288,93 @@ static void paint_cell(term_renderer_t *r, int row, int col, const bool *wide_oc
 		return;
 	}
 
-	/* SGR 5 blink: hide the glyph on the dark phase of the blink clock */
-	if (cell.attrs.blink && !r->blink_on) {
-		for (int y = 0; y < TERM_CELL_H; y++)
-			for (int x = 0; x < TERM_CELL_W; x++)
-				r->pixels[(py0 + y) * r->win_w + (px0 + x)] = off;
+	/* SGR 5 blink dark phase / SGR 8 conceal: no glyph, background stays */
+	if ((cell.attrs.blink && !r->blink_on) || cell.attrs.conceal)
 		return;
-	}
-	/* SGR 8 conceal: hide the glyph entirely (password-style fields) */
-	if (cell.attrs.conceal) {
-		for (int y = 0; y < TERM_CELL_H; y++)
-			for (int x = 0; x < TERM_CELL_W; x++)
-				r->pixels[(py0 + y) * r->win_w + (px0 + x)] = off;
-		return;
-	}
 
-	if (idx == 0xFF && cp != 0xFF) {
-		/* not in CP437: try CJK (double-width) before falling back */
-		if (cell.width >= 2 && paint_cjk(r, row, col, cp, on_b, off_b)) {
-			/* decorations apply to CJK cells too (16 px wide) */
-			if (cell.attrs.underline)
-				for (int x = 0; x < 16; x++)
-					r->pixels[(py0 + TERM_CELL_H - 1) * r->win_w + (px0 + x)] = on_b;
-			if (cell.attrs.strike)
-				for (int x = 0; x < 16; x++)
-					r->pixels[(py0 + TERM_CELL_H / 2) * r->win_w + (px0 + x)] = on_b;
-			return;
-		}
-		/* emoji: 16x16, rendered even when layout width is 1 (wide glyph) */
-		if (paint_emoji(r, row, col, cp, on_b, off_b))
-			return;
-		/* TUI symbols from unifont: fixed 16px height, natural width — a
-		 * 16x16 source renders 16px wide (may spill into the next cell),
-		 * an 8x16 source renders 8px */
-		int sw = 1;
-		const uint8_t *sg = NULL;
-		if (cell.width >= 2)
-			sg = emoji_glyph(cp);    /* full-width emoji */
-		if (!sg)
-			sg = symbol_glyph(cp, &sw);
-		if (sg) {
-			if (sw >= 2) {
-				for (int gy = 0; gy < 16; gy++) {
-					uint8_t lo = sg[gy * 2], hi = sg[gy * 2 + 1];
-					for (int gx = 0; gx < 16; gx++) {
-						uint8_t byte = (gx < 8) ? lo : hi;
-						bool set = (byte >> (7 - (gx & 7))) & 1;
-						r->pixels[(py0 + gy) * r->win_w + (px0 + gx)] = set ? on_b : off_b;
-					}
-				}
-			} else {
-				for (int gy = 0; gy < TERM_CELL_H; gy++) {
-					uint8_t line = sg[gy];
-					for (int gx = 0; gx < TERM_CELL_W; gx++) {
-						bool set = (line >> (7 - gx)) & 1;
-						r->pixels[(py0 + gy) * r->win_w + (px0 + gx)] = set ? on_b : off_b;
-					}
-				}
-			}
-			return;
-		}
-		/* unmapped: draw a hollow box placeholder spanning the cell width */
-		int pw = (cell.width >= 2) ? 2 : 1;
-		for (int y = 0; y < TERM_CELL_H; y++) {
-			for (int x = 0; x < pw * TERM_CELL_W; x++) {
-				bool edge = (x == 0 || y == 0 || x == pw * TERM_CELL_W - 1 || y == TERM_CELL_H - 1);
-				r->pixels[(py0 + y) * r->win_w + (px0 + x)] = edge ? on_b : off_b;
+	uint8_t idx = term_unicode_to_cp437(cp);
+	if (idx != 0xFF || cp == 0xFF) {
+		/* IBM VGA glyphs: MSB = leftmost pixel */
+		const uint8_t *glyph = vga8x16[idx];
+		for (int gy = 0; gy < TERM_CELL_H; gy++) {
+			uint8_t line = glyph[gy];
+			for (int gx = 0; gx < TERM_CELL_W; gx++) {
+				bool set = (line >> (7 - gx)) & 1;
+				/* underline/bar cursor: invert a band of the cell */
+				bool cursor_px = cursor_here && !cur_block &&
+					((r->cursor_shape == VTERM_PROP_CURSORSHAPE_UNDERLINE && gy >= TERM_CELL_H - 2) ||
+					 (r->cursor_shape == VTERM_PROP_CURSORSHAPE_BAR_LEFT && gx < 2));
+				if (cursor_px)
+					/* inverted: glyph pixels take the background colour,
+					 * the rest take the foreground colour */
+					r->pixels[(py0 + gy) * r->win_w + (px0 + gx)] = set ? off_b : on_b;
+				else if (set)
+					r->pixels[(py0 + gy) * r->win_w + (px0 + gx)] = on_b;
 			}
 		}
+		/* SGR 4 underline: bottom row */
+		if (cell.attrs.underline) {
+			for (int x = 0; x < TERM_CELL_W; x++)
+				r->pixels[(py0 + TERM_CELL_H - 1) * r->win_w + (px0 + x)] = on_b;
+		}
+		/* SGR 9 strikethrough: middle row */
+		if (cell.attrs.strike) {
+			for (int x = 0; x < TERM_CELL_W; x++)
+				r->pixels[(py0 + TERM_CELL_H / 2) * r->win_w + (px0 + x)] = on_b;
+		}
 		return;
 	}
 
-	/* IBM VGA glyphs: MSB = leftmost pixel */
-	const uint8_t *glyph = vga8x16[idx];
-	for (int gy = 0; gy < TERM_CELL_H; gy++) {
-		uint8_t line = glyph[gy];
-		for (int gx = 0; gx < TERM_CELL_W; gx++) {
-			bool set = (line >> (7 - gx)) & 1;
-			/* cursor shape masks which pixels invert */
-			bool cur = cursor_here;
-			if (cur && r->cursor_shape == VTERM_PROP_CURSORSHAPE_UNDERLINE)
-				cur = (gy >= TERM_CELL_H - 2);
-			else if (cur && r->cursor_shape == VTERM_PROP_CURSORSHAPE_BAR_LEFT)
-				cur = (gx < 2);
-			r->pixels[(py0 + gy) * r->win_w + (px0 + gx)] = (set != cur) ? on : off;
+	if (cell.width >= 2 && paint_cjk(r, row, col, cp, on_b)) {
+		/* decorations apply to CJK cells too (16 px wide) */
+		if (cell.attrs.underline)
+			for (int x = 0; x < 16; x++)
+				r->pixels[(py0 + TERM_CELL_H - 1) * r->win_w + (px0 + x)] = on_b;
+		if (cell.attrs.strike)
+			for (int x = 0; x < 16; x++)
+				r->pixels[(py0 + TERM_CELL_H / 2) * r->win_w + (px0 + x)] = on_b;
+		return;
+	}
+	/* emoji: 16x16, rendered even when layout width is 1 (wide glyph) */
+	if (paint_emoji(r, row, col, cp, on_b))
+		return;
+	/* TUI symbols from unifont: fixed 16px height, natural width — a
+	 * 16x16 source renders 16px wide (may spill into the next cell),
+	 * an 8x16 source renders 8px */
+	int sw = 1;
+	const uint8_t *sg = NULL;
+	if (cell.width >= 2)
+		sg = emoji_glyph(cp);    /* full-width emoji */
+	if (!sg)
+		sg = symbol_glyph(cp, &sw);
+	if (sg) {
+		if (sw >= 2) {
+			for (int gy = 0; gy < 16; gy++) {
+				uint8_t lo = sg[gy * 2], hi = sg[gy * 2 + 1];
+				for (int gx = 0; gx < 16; gx++) {
+					uint8_t byte = (gx < 8) ? lo : hi;
+					if ((byte >> (7 - (gx & 7))) & 1)
+						r->pixels[(py0 + gy) * r->win_w + (px0 + gx)] = on_b;
+				}
+			}
+		} else {
+			for (int gy = 0; gy < TERM_CELL_H; gy++) {
+				uint8_t line = sg[gy];
+				for (int gx = 0; gx < TERM_CELL_W; gx++)
+					if ((line >> (7 - gx)) & 1)
+						r->pixels[(py0 + gy) * r->win_w + (px0 + gx)] = on_b;
+			}
 		}
+		return;
 	}
-
-	/* SGR 4 underline: bottom row */
-	if (cell.attrs.underline) {
-		for (int x = 0; x < TERM_CELL_W; x++)
-			r->pixels[(py0 + TERM_CELL_H - 1) * r->win_w + (px0 + x)] = on;
-	}
-	/* SGR 9 strikethrough: middle row */
-	if (cell.attrs.strike) {
-		for (int x = 0; x < TERM_CELL_W; x++)
-			r->pixels[(py0 + TERM_CELL_H / 2) * r->win_w + (px0 + x)] = on;
-	}
+	/* unmapped: hollow box placeholder spanning the layout width */
+	int pw = (cell.width >= 2) ? 2 : 1;
+	for (int y = 0; y < TERM_CELL_H; y++)
+		for (int x = 0; x < pw * TERM_CELL_W; x++) {
+			bool edge = (x == 0 || y == 0 || x == pw * TERM_CELL_W - 1 || y == TERM_CELL_H - 1);
+			if (edge)
+				r->pixels[(py0 + y) * r->win_w + (px0 + x)] = on_b;
+		}
 }
 
 void term_render_init(term_renderer_t *r, VTerm *vt, uint32_t *pixels)
@@ -424,36 +412,16 @@ void term_render_frame(term_renderer_t *r)
 					r->sel_line_end = col;
 			}
 		}
-		bool wide_occ[512];
+		/* pass 1: background spans exactly the layout width; pass 2:
+		 * glyphs at natural width (may spill into the next column) */
 		for (int col = 0; col < r->cols; col++)
-			wide_occ[col] = false;
-		/* pass 1: mark columns covered by a 1-cell-layout glyph that
-		 * renders 16px wide (geometry/ballot boxes/emoji) */
-		for (int col = 0; col < r->cols - 1; col++) {
-			VTermScreenCell cell;
-			VTermPos p = { .row = row, .col = col };
-			if (!vterm_screen_get_cell(r->screen, p, &cell))
-				continue;
-			if (cell.width < 2 && cell.chars[0] && cell.chars[0] != (uint32_t)-1 &&
-			    is_wide_glyph_cp(cell.chars[0]))
-				wide_occ[col + 1] = true;
-		}
+			paint_background(r, row, col);
 		for (int col = 0; col < r->cols; col++)
-			paint_cell(r, row, col, wide_occ);
+			paint_glyph(r, row, col);
 	}
 }
 
 /* Read a cell through the renderer's source (live screen or scrollback). */
-static bool get_cell_at(const term_renderer_t *r, int row, int col, VTermScreenCell *cell)
-{
-	if (r->scroll_offset > 0 && row < r->scroll_offset) {
-		int sb_row = r->scroll_offset - 1 - row;
-		return r->sb_get_cell && r->sb_get_cell(r->sb_user, sb_row, col, cell);
-	}
-	VTermPos p = { .row = row - r->scroll_offset, .col = col };
-	return vterm_screen_get_cell(r->screen, p, cell);
-}
-
 /* Extract the text of the current selection as UTF-8 (lines joined with
  * \n, trailing spaces stripped). Returns length. */
 static size_t utf8_put(uint32_t cp, char *out)
@@ -477,7 +445,7 @@ size_t term_render_selected_text(const term_renderer_t *r, char *out, size_t cap
 		if (!r->sel_block) {
 			for (int col = c0; col <= c1; col++) {
 				VTermScreenCell cell;
-				if (get_cell_at(r, row, col, &cell) && cell.chars[0] != 0 &&
+				if (get_render_cell(r, row, col, &cell) && cell.chars[0] != 0 &&
 				    cell.chars[0] != (uint32_t)-1)
 					last = col;
 			}
@@ -488,7 +456,7 @@ size_t term_render_selected_text(const term_renderer_t *r, char *out, size_t cap
 			continue; /* empty line */
 		for (int col = c0; col <= last; col++) {
 			VTermScreenCell cell;
-			if (!get_cell_at(r, row, col, &cell))
+			if (!get_render_cell(r, row, col, &cell))
 				continue;
 			for (int i = 0; i < VTERM_MAX_CHARS_PER_CELL && cell.chars[i]; i++) {
 				if (cell.chars[i] == (uint32_t)-1)

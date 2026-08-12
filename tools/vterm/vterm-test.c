@@ -1384,6 +1384,26 @@ static void test_symbols(void)
 		CHECK_EQ("☑ layout: renders 16px", cell_bright(&t2.r, 0, 1) > 5, 1, "col1 painted");
 		tctx_free(&t2);
 	}
+	/* background must not spill past the layout cell (real-terminal
+	 * behaviour): green-background ☑ then a default-background space.
+	 * The space's column must stay black (no green bleed from ☑). */
+	{
+		tctx_t t3;
+		tctx_new(&t3, 3, 20);
+		tctx_feed(&t3, "\033[42m\xe2\x98\x91\033[0m \033[42mX\033[0m"); /* 绿底☑ 空格 绿底X */
+		term_render_frame(&t3.r);
+		/* col1 (space) background pixels must not be green */
+		int green = 0;
+		for (int y = 0; y < TERM_CELL_H; y++)
+			for (int x = 0; x < TERM_CELL_W; x++) {
+				uint32_t p = t3.r.pixels[y * t3.r.win_w + TERM_CELL_W + x];
+				uint8_t g = (p >> 8) & 0xFF, r = (p >> 16) & 0xFF, b = p & 0xFF;
+				if (g > 128 && r < 100 && b < 100)
+					green++;
+			}
+		CHECK_EQ("background: no green bleed into space col", green == 0, 1, "col1 black");
+		tctx_free(&t3);
+	}
 	tctx_free(&t);
 }
 
