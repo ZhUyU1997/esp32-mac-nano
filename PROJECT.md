@@ -20,6 +20,48 @@ make mac-all       # build all Mac 68k apps (Retro68)
 make mac-clean     # clean Mac app build
 ```
 
+## Terminal Emulator (host, XT-era)
+
+An XT-era style terminal emulator runs on the host (x64) as a separate
+mode from the Mac emulator. It is built on the vendored libvterm core
+(`libvterm/`, VT220/xterm parsing + screen state) plus a custom pixel
+renderer (`tools/vterm/`), and is the prototype for a future ESP32
+terminal mode.
+
+```bash
+xmake run vterm-sdl        # interactive window: 640×480, 80×30, true bash (pty)
+xmake run -w ./ vterm-sdl  # run with the shell's cwd
+xmake run vterm-pty       # text loopback (stdout)
+xmake run vterm-test      # regression suite: 155 asserts + 628 escape seqs
+```
+
+**`tools/vterm/` layout**:
+
+| File | Role |
+|---|---|
+| `vterm-sdl.c` | SDL host: pty, keyboard, mouse, clipboard, resize |
+| `vterm-pty.c` | text-mode loopback for scripting/debug |
+| `vterm-test.c` | automated pixel/behaviour regressions |
+| `term_render.c/.h` | platform-free renderer (fonts, colours, cursor, selection) |
+| `vga8x16.h` | IBM VGA 8×16 glyphs (CP437), from Linux kernel (GPL-2.0) |
+| `unicode_glyph.h` | 16×16 GB2312 CJK glyphs indexed by Unicode (6886) |
+| `HZK16` | source dot-matrix font for the generator |
+| `xterm_seqs.h` | 628 escape sequences extracted from xterm.js tests |
+
+**Features** (aligned with xterm behaviour): SGR colours 16/256/true,
+bold-as-bright, underline/strike/blink/conceal, DECSCUSR cursor shapes,
+scrollback with mouse-wheel + streaming/block selection (double-click
+word, triple-click line, Ctrl+C copy, right/middle/Ctrl+Shift+V paste,
+OSC 52 clipboard), bracketed paste, mouse protocols, focus reporting,
+DECSET 2026 synchronized output, window resize with reflow, CJK text.
+
+Regenerate derived data:
+
+```bash
+python3 scripts/gen-hzk16.py        # tools/vterm/unicode_glyph.h
+python3 scripts/gen-xterm-seqs.py   # tools/vterm/xterm_seqs.h (from an xterm.js checkout)
+```
+
 ## UI Strings & Fonts
 
 UI text is centralized in `main/arch/esp32/mach-s3/ui/ui_strings.json` (source of truth, 56 entries, Chinese). Generated artifacts are committed, the generator scripts are the only way to edit them:
