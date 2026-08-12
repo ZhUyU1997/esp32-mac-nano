@@ -1,10 +1,10 @@
-/* 键盘网格 */
+/* 键盘网格 — 颜色走 base.css 变量（键帽深浅随主题） */
 
 .kb { display:flex; flex-direction:column; gap:4px; }
 .krow { display:flex; gap:4px; }
-.key { flex:1; padding:9px 2px; background:#f7f4ee; border:none; border-radius:6px; color:#3a3a3a; font-size:13px; text-align:center; touch-action:none; box-shadow:0 2px 0 #cfc9bc; border:1px solid #d8d2c4; }
-.key:active, .key.on { background:#d8d2c4; box-shadow:0 1px 0 #cfc9bc; }
+.key { flex:1; padding:9px 2px; background:var(--key-bg); border:none; border-radius:6px; color:var(--key-ink); font-size:13px; text-align:center; touch-action:none; box-shadow:0 2px 0 var(--key-shadow); border:1px solid var(--key-line); }
+.key:active, .key.on { background:var(--fill-press); box-shadow:0 1px 0 var(--key-shadow); }
 .key.wide { flex:1.6; }
 .key.space { flex:6; }
-.key.mod { background:#5f5f5f; color:#fff; border-color:#525252; box-shadow:0 2px 0 #474747; }
-.key.mod:active, .key.mod.on { background:#3e3e3e; box-shadow:0 1px 0 #474747; }
+.key.mod { background:var(--btn); color:#fff; border-color:var(--btn-line); box-shadow:0 2px 0 var(--btn-line); }
+.key.mod:active, .key.mod.on { background:var(--btn-dk); box-shadow:0 1px 0 var(--btn-line); }

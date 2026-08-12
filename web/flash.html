@@ -142,9 +142,11 @@
     body::before, body::after {
       content: ""; position: fixed; z-index: -1; pointer-events: none;
       width: 44vmax; height: 44vmax; border-radius: 50%;
-      animation:
-        glowDrift 18s ease-in-out infinite alternate,
-        glowHue 14s linear infinite;
+      animation-name: glowDrift, glowHue;
+      animation-duration: 18s, 14s;
+      animation-timing-function: ease-in-out, linear;
+      animation-iteration-count: infinite;
+      animation-direction: alternate, normal;
       will-change: transform, filter;
     }
     body::before {
@@ -154,7 +156,7 @@
     body::after {
       bottom: -14vmax; left: -9vmax;
       background: radial-gradient(circle, var(--glow-b), transparent 58%);
-      animation-delay: -9s;
+      animation-delay: -9s, 0s;
     }
     @keyframes glowDrift {
       from { transform: translate(0, 0) scale(1); }

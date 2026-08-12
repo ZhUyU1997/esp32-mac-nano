@@ -1,28 +1,28 @@
 /* 截屏弹窗：遮罩 / 弹窗 / Cropper 手柄（CleanShot X 风格）/ 比例胶囊 / 旋转拨盘 / 下载 */
 
-.shotpop { position:fixed; inset:0; background:rgba(0,0,0,.45); z-index:99; display:flex; align-items:center; justify-content:center; }
+.shotpop { position:fixed; inset:0; background:rgba(0,0,0,.45); z-index:99; display:flex; align-items:center; justify-content:center; -webkit-backdrop-filter:blur(2px); backdrop-filter:blur(2px); }
 .shotpop[hidden] { display:none; }
-.shotbox { width:min(92vw, 640px); height:92vh; height:92dvh; background:#e6e2d8; border:2px solid #404040; border-radius:8px; overflow:hidden; box-shadow:0 4px 16px rgba(0,0,0,.4); display:flex; flex-direction:column; }
-.shotview { position:relative; background:#e6e2d8; margin:0; padding:0; border:none; display:flex; align-items:center; justify-content:center; flex:1; min-height:0; overflow:hidden; touch-action:none; }
+.shotbox { width:min(92vw, 640px); height:92vh; height:92dvh; background:var(--glass-card); border:1px solid var(--glass-border); border-radius:8px; overflow:hidden; box-shadow:0 4px 16px rgba(0,0,0,.4); display:flex; flex-direction:column; -webkit-backdrop-filter:var(--glass-card-blur); backdrop-filter:var(--glass-card-blur); }
+.shotview { position:relative; background:var(--glass-card); margin:0; padding:0; border:none; display:flex; align-items:center; justify-content:center; flex:1; min-height:0; overflow:hidden; touch-action:none; }
 #shotImg { display:block; max-width:100%; max-height:100%; }
 
 .wallctrl { display:none; flex-direction:column; gap:6px; align-items:center; padding:8px 10px 8px; }
 .ratio-row { display:flex; flex-wrap:wrap; justify-content:center; gap:4px; }
-.ratio-btn { height:22px; padding:0 10px; background:#e6e2d8; border:1px solid #a8a296; border-radius:11px; color:#333; font-size:12px; cursor:pointer; }
-.ratio-btn.on { background:#404040; color:#fff; border-color:#404040; }
+.ratio-btn { height:22px; padding:0 10px; background:var(--light); border:1px solid var(--light-line); border-radius:11px; color:var(--light-ink); font-size:12px; cursor:pointer; }
+.ratio-btn.on { background:var(--ink); color:var(--bg); border-color:var(--ink); }
 
 .walldial { position:relative; width:280px; height:64px; overflow:hidden; touch-action:none; cursor:pointer; user-select:none; -webkit-user-select:none; }
 .wd-band { position:absolute; left:-200px; top:calc(50% + 10px); height:20px; margin-top:-10px; will-change:transform; }
-.wd-tick { position:absolute; top:50%; width:2px; height:12px; margin-top:-6px; background:#a8a296; }
-.wd-indicator { position:absolute; left:50%; top:calc(50% + 10px); width:2px; height:18px; margin:-9px 0 0 -1px; background:#404040; }
-.wd-label { position:absolute; top:0; left:50%; transform:translateX(-50%); height:22px; line-height:20px; padding:0 14px; background:#fff; border:1px solid #d8d2c4; border-radius:11px; font-size:13px; color:#333; }
-.wd-reset { position:absolute; top:0; left:50%; transform:translateX(-50%); height:22px; padding:0 14px; background:#e6e2d8; border:1px solid #a8a296; border-radius:11px; color:#333; font-size:13px; cursor:pointer; display:none; }
-.wd-reset:active { background:#d8d2c4; }
+.wd-tick { position:absolute; top:50%; width:2px; height:12px; margin-top:-6px; background:var(--muted); }
+.wd-indicator { position:absolute; left:50%; top:calc(50% + 10px); width:2px; height:18px; margin:-9px 0 0 -1px; background:var(--ink); }
+.wd-label { position:absolute; top:0; left:50%; transform:translateX(-50%); height:22px; line-height:20px; padding:0 14px; background:var(--light); border:1px solid var(--key-line); border-radius:11px; font-size:13px; color:var(--light-ink); }
+.wd-reset { position:absolute; top:0; left:50%; transform:translateX(-50%); height:22px; padding:0 14px; background:var(--light); border:1px solid var(--light-line); border-radius:11px; color:var(--light-ink); font-size:13px; cursor:pointer; display:none; }
+.wd-reset:active { background:var(--fill-press); }
 
 .shotfoot { display:flex; gap:8px; padding:0 10px 10px; }
-.shotdl { flex:1; height:36px; background:#d8d8d8; border:1.5px solid #404040; border-radius:5px; color:#000; font-size:13px; cursor:pointer; box-shadow:0 1px 0 rgba(0,0,0,.25); }
-.shotdl:active { background:#c2c2c2; }
-.shotclose { height:36px; padding:0 14px; background:#5f5f5f; border:none; border-radius:5px; color:#fff; font-size:13px; cursor:pointer; }
+.shotdl { flex:1; height:36px; background:var(--light); border:1.5px solid var(--light-line); border-radius:5px; color:var(--light-ink); font-size:13px; cursor:pointer; box-shadow:0 1px 0 rgba(0,0,0,.25); }
+.shotdl:active { background:var(--fill-press); }
+.shotclose { height:36px; padding:0 14px; background:var(--btn); border:none; border-radius:5px; color:#fff; font-size:13px; cursor:pointer; }
 
 /* Cropper 手柄：边线长条可拖区 + L 型角点（CleanShot X 风格，点击区域大） */
 .cropper-line { background-color:transparent !important; }

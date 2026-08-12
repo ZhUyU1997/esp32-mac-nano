@@ -1,89 +1,195 @@
 /* WiFi provisioning UI (standalone provision.html entry):
- * base layout + iOS Settings -> WiFi style. No remote-control styles. */
+ * Apple glassmorphism style — same design language as flash.html.
+ * Base layout + iOS Settings -> WiFi list, glass cards, dark mode. */
 
 * { box-sizing: border-box; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+:root {
+  --bg: #f5f5f7;
+  --ink: #1d1d1f;
+  --muted: #6e6e73;
+  --line: #e5e5ea;
+  --blue: #0071e3;
+  --green: #34c759;
+  --red: #ff3b30;
+  --glass: rgba(255, 255, 255, 0.55);
+  --glass-border: rgba(255, 255, 255, 0.6);
+  --glass-card: rgba(255, 255, 255, 0.42);
+  --glass-card-blur: blur(20px) saturate(1.8);
+  --fill: rgba(255, 255, 255, 0.45);
+  --fill-hover: rgba(255, 255, 255, 0.62);
+  --fill-press: rgba(255, 255, 255, 0.8);
+  --icon: #aeaeb2;
+  --icon-active: #1a1a1a;  /* WiFi 信号点亮段 */
+  --icon-dim: #d8d8d8;     /* 未点亮段 */
+  --glow-a: rgba(0, 113, 227, 0.55);
+  --glow-b: rgba(52, 199, 89, 0.45);
+  --glow-c: rgba(120, 90, 210, 0.22);
+}
+:root[data-theme="dark"] {
+  --bg: #1c1c1e;
+  --ink: #f5f5f7;
+  --muted: #98989d;
+  --line: #3a3a3c;
+  --blue: #0a84ff;
+  --green: #30d158;
+  --red: #ff453a;
+  --glass: rgba(28, 28, 30, 0.6);
+  --glass-border: rgba(255, 255, 255, 0.14);
+  --glass-card: rgba(28, 28, 30, 0.5);
+  --glass-card-blur: blur(20px) saturate(1.8);
+  --fill: rgba(255, 255, 255, 0.1);
+  --fill-hover: rgba(255, 255, 255, 0.16);
+  --fill-press: rgba(255, 255, 255, 0.26);
+  --icon: #8e8e93;
+  --icon-active: #f5f5f7;
+  --icon-dim: #3a3a3c;
+  --glow-a: rgba(0, 122, 255, 0.45);
+  --glow-b: rgba(48, 209, 88, 0.35);
+  --glow-c: rgba(130, 100, 220, 0.25);
+}
 html, body { height: 100%; }
-body { background:#f0ede6; color:#333; font-family: system-ui, sans-serif; margin:0; padding:8px; display:flex; flex-direction:column; }
-#app { display:flex; flex-direction:column; flex:1; min-height:0; }
-@keyframes spin { to { transform:rotate(360deg); } }
+body {
+  background:
+    radial-gradient(circle at 55% 45%, var(--glow-c), transparent 52%),
+    var(--bg);
+  color: var(--ink); font-family: system-ui, sans-serif; margin: 0; padding: 8px;
+  display: flex; flex-direction: column;
+  transition: background 0.3s, color 0.3s;
+}
+/* drifting glow spots — same as flash page */
+body::before, body::after {
+  content: ""; position: fixed; z-index: -1; pointer-events: none;
+  width: 44vmax; height: 44vmax; border-radius: 50%;
+  animation-name: glowDrift, glowHue;
+  animation-duration: 18s, 14s;
+  animation-timing-function: ease-in-out, linear;
+  animation-iteration-count: infinite;
+  animation-direction: alternate, normal;
+  will-change: transform, filter;
+}
+body::before { top: -14vmax; right: -9vmax; background: radial-gradient(circle, var(--glow-a), transparent 58%); }
+body::after { bottom: -14vmax; left: -9vmax; background: radial-gradient(circle, var(--glow-b), transparent 58%); animation-delay: -9s, 0s; }
+@keyframes glowDrift {
+  from { transform: translate(0, 0) scale(1); }
+  to   { transform: translate(15vmax, 8vmax) scale(1.3); }
+}
+@keyframes glowHue {
+  0%, 100% { filter: hue-rotate(0deg); }
+  50%      { filter: hue-rotate(52deg); }
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+#app { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+
 /* ── WiFi provisioning UI: iOS Settings -> WiFi style (provisioning only) ── */
-.wifi-shell { flex: 1; min-height: 0; display: flex; flex-direction: column; background: #f2f2f7; margin: -8px; padding: 0; overflow-x: hidden; }
+.wifi-shell {
+  flex: 1; min-height: 0; display: flex; flex-direction: column;
+  margin: -8px; padding: 0; overflow-x: hidden;
+}
 .wifi-page { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; -webkit-user-select: none; user-select: none; }
 
 /* nav title */
-.wifi-nav { padding: 8px 20px 10px; }
-.wifi-nav h1 { font-size: 32px; font-weight: 700; letter-spacing: -0.5px; color: #000; margin: 0; }
+.wifi-nav {
+  padding: 8px 20px 10px;
+  background: var(--glass);
+  -webkit-backdrop-filter: var(--glass-card-blur);
+  backdrop-filter: var(--glass-card-blur);
+  border-bottom: 1px solid var(--glass-border);
+}
+.wifi-nav h1 { font-size: 32px; font-weight: 700; letter-spacing: -0.5px; color: var(--ink); margin: 0; }
 
 /* list header: group title + refresh button (spins while scanning) */
 .wifi-listhead { display: flex; align-items: center; justify-content: space-between; padding: 10px 8px 4px 16px; }
-.wifi-listtitle { font-size: 13px; color: #8e8e93; }
-.wifi-refresh { flex: none; width: 30px; height: 30px; display: flex; align-items: center; justify-content: center; border: 0; background: #f2f2f7; color: #007aff; border-radius: 50%; cursor: pointer; touch-action: manipulation; }
-.wifi-refresh:active { background: #e5e5ea; }
+.wifi-listtitle { font-size: 13px; color: var(--muted); }
+.wifi-refresh { flex: none; width: 30px; height: 30px; display: flex; align-items: center; justify-content: center; border: 0; background: var(--fill); color: var(--blue); border-radius: 50%; cursor: pointer; touch-action: manipulation; }
+.wifi-refresh:active { background: var(--fill-press); }
 .wifi-refresh.spin svg { animation: spin .8s linear infinite; }
-.wifi-lock { color: #8e8e93; flex: none; display: inline-flex; }
+.wifi-lock { color: var(--muted); flex: none; display: inline-flex; }
 
-/* grouped list (iOS inset grouped) */
-.wifi-group { margin: 8px 16px; background: #fff; border-radius: 12px; overflow: hidden; }
-.wifi-cell { display: flex; align-items: center; gap: 12px; width: 100%; padding: 10px 16px; border: 0; border-bottom: 1px solid #f0f0f0; background: none; font-size: 16px; text-align: left; cursor: pointer; touch-action: manipulation; }
+/* grouped list (glass inset grouped) — in normal flow, scrolls with the page */
+.wifi-group {
+  margin: 8px 16px;
+  background: var(--glass-card);
+  -webkit-backdrop-filter: var(--glass-card-blur);
+  backdrop-filter: var(--glass-card-blur);
+  border: 1px solid var(--glass-border);
+  border-radius: 12px; overflow: hidden;
+}
+.wifi-cell { display: flex; align-items: center; gap: 12px; width: 100%; padding: 10px 16px; border: 0; border-bottom: 1px solid var(--line); background: none; font-size: 16px; text-align: left; cursor: pointer; touch-action: manipulation; }
 .wifi-cell:last-child { border-bottom: 0; }
-.wifi-cell:active { background: #f2f2f7; }
+.wifi-cell:active { background: var(--fill-press); }
 .wifi-cell:disabled { opacity: .55; }
-.wifi-cell.connecting { background: #f5f9ff; animation: wifi-pulse 1.2s ease-in-out infinite; }
-.wifi-cell.failed { background: #fdf4f4; }
+.wifi-cell.connecting { background: rgba(0, 113, 227, 0.08); animation: wifi-pulse 1.2s ease-in-out infinite; }
+.wifi-cell.failed { background: rgba(255, 59, 48, 0.07); }
 @keyframes wifi-pulse {
-  0%, 100% { background: #f5f9ff; }
-  50% { background: #e6f0ff; }
+  0%, 100% { background: rgba(0, 113, 227, 0.08); }
+  50% { background: rgba(0, 113, 227, 0.2); }
 }
 /* signal icon: standalone left column, vertically centered in the cell */
 .wifi-signal { width: 19px; flex: none; display: flex; align-items: center; justify-content: center; align-self: center; }
 /* right content: first row network info + status row */
 .wifi-cell-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
 .wifi-cell-main { display: flex; align-items: center; gap: 12px; min-height: 24px; }
-.wifi-ssid { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: #000; }
+.wifi-ssid { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--ink); }
 .wifi-lock { font-size: 13px; flex: none; display: inline-flex; align-items: center; justify-content: center; align-self: center; }
 /* status row */
-.wifi-cell-status { color: #007aff; font-size: 13px; flex: none; }
-.wifi-cell-status.failed { color: #ff3b30; }
+.wifi-cell-status { color: var(--blue); font-size: 13px; flex: none; }
+.wifi-cell-status.failed { color: var(--red); }
 
 /* scanning / empty state */
-.wifi-scanstate { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 28px 16px; color: #8e8e93; font-size: 14px; text-align: center; line-height: 1.5; }
+.wifi-scanstate { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 28px 16px; color: var(--muted); font-size: 14px; text-align: center; line-height: 1.5; }
 
 /* footer hint */
-.wifi-foot { text-align: center; color: #8e8e93; font-size: 12px; margin: 14px 0 24px; }
+.wifi-foot { text-align: center; color: var(--muted); font-size: 12px; margin: 14px 0 24px; }
 
-/* bottom sheet */
-.wifi-mask { position: fixed; inset: 0; background: rgba(0, 0, 0, .35); z-index: 100; display: flex; align-items: flex-end; }
-.wifi-sheet { background: #fff; width: 100%; border-radius: 16px 16px 0 0; padding: 18px 16px 28px; animation: wifi-sheet-up .25s ease; }
+/* bottom sheet (glass) — JS drives the height above the keyboard;
+ * height + opacity transitions smooth the popup (no jump/flash) */
+.wifi-mask {
+  position: fixed; top: 0; left: 0; right: 0;
+  background: rgba(0, 0, 0, .35); z-index: 100;
+  display: flex; align-items: flex-end;
+  transition: height 0.22s cubic-bezier(0.3, 0, 0.2, 1), opacity 0.3s ease 0.2s;
+  animation: maskFade 0.3s ease 0.2s both;
+}
+@keyframes maskFade { from { opacity: 0; } to { opacity: 1; } }
+.wifi-sheet {
+  background: var(--glass);
+  -webkit-backdrop-filter: var(--glass-card-blur);
+  backdrop-filter: var(--glass-card-blur);
+  border-top: 1px solid var(--glass-border);
+  width: 100%; border-radius: 16px 16px 0 0; padding: 18px 16px 28px;
+  animation: wifi-sheet-up .25s ease;
+}
 @keyframes wifi-sheet-up { from { transform: translateY(40px); opacity: 0; } to { transform: none; opacity: 1; } }
-.wifi-sheet-title { font-size: 17px; font-weight: 600; text-align: center; margin-bottom: 16px; word-break: break-all; color: #000; }
-.wifi-sheet-row { display: flex; align-items: center; gap: 6px; background: #f2f2f7; border-radius: 10px; padding: 2px 6px; margin-bottom: 12px; }
-.wifi-sheet-row label { color: #8e8e93; font-size: 15px; margin-left: 8px; flex: none; }
-.wifi-sheet-row input { flex: 1; min-width: 0; border: 0; background: none; font-size: 16px; padding: 10px 4px; outline: none; color: #000; -webkit-user-select: text; user-select: text; }
-.wifi-eye { flex: none; width: 34px; height: 34px; display: flex; align-items: center; justify-content: center; border: 0; background: none; color: #8e8e93; cursor: pointer; border-radius: 8px; touch-action: manipulation; }
-.wifi-eye:active { background: #e5e5ea; }
-.wifi-sheet-err { color: #ff3b30; font-size: 14px; text-align: center; margin-bottom: 12px; }
+.wifi-sheet-title { font-size: 17px; font-weight: 600; text-align: center; margin-bottom: 16px; word-break: break-all; color: var(--ink); }
+.wifi-sheet-row { display: flex; align-items: center; gap: 6px; background: var(--fill); border-radius: 10px; padding: 2px 6px; margin-bottom: 12px; }
+.wifi-sheet-row label { color: var(--muted); font-size: 15px; margin-left: 8px; flex: none; }
+.wifi-sheet-row input { flex: 1; min-width: 0; border: 0; background: none; font-size: 16px; padding: 10px 4px; outline: none; color: var(--ink); -webkit-user-select: text; user-select: text; }
+.wifi-eye { flex: none; width: 34px; height: 34px; display: flex; align-items: center; justify-content: center; border: 0; background: none; color: var(--muted); cursor: pointer; border-radius: 8px; touch-action: manipulation; }
+.wifi-eye:active { background: var(--fill-press); }
+.wifi-sheet-err { color: var(--red); font-size: 14px; text-align: center; margin-bottom: 12px; }
 .wifi-sheet-actions { display: flex; gap: 10px; }
 .wifi-sheet-btn { flex: 1; padding: 12px; border: 0; border-radius: 10px; font-size: 16px; cursor: pointer; touch-action: manipulation; }
-.wifi-sheet-btn.cancel { background: #f2f2f7; color: #007aff; }
-.wifi-sheet-btn.cancel:active { background: #e5e5ea; }
-.wifi-sheet-btn.conn { background: #007aff; color: #fff; font-weight: 600; }
-.wifi-sheet-btn.conn:active { background: #0a68d6; }
-.wifi-sheet-btn.conn:disabled { background: #a9cdf3; cursor: default; }
+.wifi-sheet-btn.cancel { background: var(--fill); color: var(--blue); }
+.wifi-sheet-btn.cancel:active { background: var(--fill-press); }
+.wifi-sheet-btn.conn { background: var(--blue); color: #fff; font-weight: 600; }
+.wifi-sheet-btn.conn:active { background: var(--blue); filter: brightness(0.92); }
+.wifi-sheet-btn.conn:disabled { background: var(--fill); color: var(--muted); cursor: default; }
 
 /* spinner / centered transition */
-.wifi-spinner { width: 24px; height: 24px; border: 2.5px solid rgba(0, 0, 0, .14); border-top-color: #007aff; border-radius: 50%; animation: spin .7s linear infinite; flex: none; }
+.wifi-spinner { width: 24px; height: 24px; border: 2.5px solid rgba(0, 0, 0, .14); border-top-color: var(--blue); border-radius: 50%; animation: spin .7s linear infinite; flex: none; }
+:root[data-theme="dark"] .wifi-spinner { border-color: rgba(255, 255, 255, 0.22); border-top-color: var(--blue); }
 .wifi-center { flex: 1; min-height: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; padding: 0 24px; }
-.wifi-center-title { font-size: 17px; font-weight: 600; color: #000; }
-.wifi-center .wifi-hint { color: #8e8e93; font-size: 13px; margin: 0; line-height: 1.6; text-align: center; }
-.wifi-ssid-name { color: #000; font-weight: 600; margin: 0 2px; }
-.wifi-success-ico { color: #34c759; display: flex; }
+.wifi-center-title { font-size: 17px; font-weight: 600; color: var(--ink); }
+.wifi-center .wifi-hint { color: var(--muted); font-size: 13px; margin: 0; line-height: 1.6; text-align: center; }
+.wifi-ssid-name { color: var(--ink); font-weight: 600; margin: 0 2px; }
+.wifi-success-ico { color: var(--green); display: flex; }
 /* success page: address copy button */
-.wifi-url-copied { font-size: 13px; color: #34c759; font-weight: 500; }
-.wifi-ip { display: flex; align-items: center; gap: 6px; border: 0; background: #f2f2f7; border-radius: 8px; padding: 10px 16px; cursor: pointer; color: #007aff; touch-action: manipulation; }
-.wifi-ip:active { background: #e5e5ea; }
+.wifi-url-copied { font-size: 13px; color: var(--green); font-weight: 500; }
+.wifi-ip { display: flex; align-items: center; gap: 6px; border: 0; background: var(--fill); border-radius: 8px; padding: 10px 16px; cursor: pointer; color: var(--blue); touch-action: manipulation; }
+.wifi-ip:active { background: var(--fill-press); }
 .wifi-ip-host { font-size: 24px; font-weight: 600; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; letter-spacing: 1px; }
-.wifi-done { display: flex; align-items: center; gap: 8px; border: 0; background: #007aff; color: #fff; border-radius: 10px; padding: 12px 20px; font-size: 16px; font-weight: 600; cursor: pointer; touch-action: manipulation; }
-.wifi-done:active { background: #0066d6; }
+.wifi-done { display: flex; align-items: center; gap: 8px; border: 0; background: var(--blue); color: #fff; border-radius: 10px; padding: 12px 20px; font-size: 16px; font-weight: 600; cursor: pointer; touch-action: manipulation; }
+.wifi-done:active { background: var(--blue); filter: brightness(0.92); }
 .wifi-done .wifi-url-copied { color: #fff; }
-.wifi-grace-count { color: #8e8e93; font-size: 12px; }
-.wifi-grace-msg { color: #34c759; font-size: 13px; font-weight: 500; text-align: center; }
+.wifi-grace-count { color: var(--muted); font-size: 12px; }
+.wifi-grace-msg { color: var(--green); font-size: 13px; font-weight: 500; text-align: center; }

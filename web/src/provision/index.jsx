@@ -4,6 +4,22 @@ import { wifiState, wifiProvisioned } from './store.js';
 import { ProvisionView, SuccessView } from './views.jsx';
 import './wifi.css';
 
+/* Keyboard-aware sheet: mask height is recomputed from the visual viewport on
+ * every resize/scroll, so the sheet always sits above the keyboard. */
+(function trackKeyboard() {
+  const vv = window.visualViewport;
+  if (!vv) return;
+  const apply = () => {
+    const mask = document.querySelector('.wifi-mask');
+    if (!mask) return;
+    const kb = Math.max(0, window.innerHeight - vv.height);
+    mask.style.height = (window.innerHeight - kb) + 'px';
+  };
+  vv.addEventListener('resize', apply);
+  vv.addEventListener('scroll', apply);
+  apply();
+})();
+
 /* Provisioning page (standalone entry provision.html): fully separate from
  * the remote page (index.html). Pure HTTP (poll /api/status + scan/config/
  * done), zero WebSocket, zero remote-control code. The device httpd serves

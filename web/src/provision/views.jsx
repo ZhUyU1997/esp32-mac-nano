@@ -5,16 +5,17 @@ import { wifiState, wifiProvisioned } from './store.js';
  * lastSsid is shown on the success page (valid until page reload). */
 let lastSsid = '';
 function WifiIcon({ level }) {
-  /* Classic WiFi icon (dot + 3 arcs outward): 1 bar=dot, 2 bars=+inner arc, 3 bars=full */
+  /* Classic WiFi icon (dot + 3 arcs outward): 1 bar=dot, 2 bars=+inner arc, 3 bars=full.
+   * Colors via CSS vars so they flip correctly in dark mode. */
   const on = Math.max(0, Math.min(3, level));
-  const lit = '#1a1a1a';
-  const dim = '#d8d8d8';
+  const active = 'var(--icon-active)';
+  const dim = 'var(--icon-dim)';
   return (
     <svg viewBox="0 0 1024 1024" width="19" height="19" aria-hidden>
-      <path fill={on >= 1 ? lit : dim} d="M512 810.666667m-42.666667 0a42.666667 42.666667 0 1 0 85.333334 0 42.666667 42.666667 0 1 0-85.333334 0Z" />
-      <path fill={on >= 2 ? lit : dim} d="M512 597.333333a213.333333 213.333333 0 0 0-148.053333 59.733334 42.666667 42.666667 0 1 0 59.306666 61.44 131.413333 131.413333 0 0 1 177.493334 0 42.666667 42.666667 0 1 0 59.306666-61.44A213.333333 213.333333 0 0 0 512 597.333333z" />
-      <path fill={on >= 3 ? lit : dim} d="M512 384a384 384 0 0 0-276.053333 117.333333A42.666667 42.666667 0 0 0 298.666667 560.64a298.666667 298.666667 0 0 1 430.08 0 42.666667 42.666667 0 0 0 30.293333 12.8 42.666667 42.666667 0 0 0 30.72-72.106667A384 384 0 0 0 512 384z" />
-      <path fill={on >= 3 ? lit : dim} d="M926.72 338.346667a597.333333 597.333333 0 0 0-829.44 0 42.666667 42.666667 0 0 0 58.88 61.44 512 512 0 0 1 711.68 0 42.666667 42.666667 0 0 0 29.44 11.946666 42.666667 42.666667 0 0 0 30.72-13.226666 42.666667 42.666667 0 0 0-1.28-60.16z" />
+      <path style={{ fill: on >= 1 ? active : dim }} d="M512 810.666667m-42.666667 0a42.666667 42.666667 0 1 0 85.333334 0 42.666667 42.666667 0 1 0-85.333334 0Z" />
+      <path style={{ fill: on >= 2 ? active : dim }} d="M512 597.333333a213.333333 213.333333 0 0 0-148.053333 59.733334 42.666667 42.666667 0 1 0 59.306666 61.44 131.413333 131.413333 0 0 1 177.493334 0 42.666667 42.666667 0 1 0 59.306666-61.44A213.333333 213.333333 0 0 0 512 597.333333z" />
+      <path style={{ fill: on >= 3 ? active : dim }} d="M512 384a384 384 0 0 0-276.053333 117.333333A42.666667 42.666667 0 0 0 298.666667 560.64a298.666667 298.666667 0 0 1 430.08 0 42.666667 42.666667 0 0 0 30.293333 12.8 42.666667 42.666667 0 0 0 30.72-72.106667A384 384 0 0 0 512 384z" />
+      <path style={{ fill: on >= 3 ? active : dim }} d="M926.72 338.346667a597.333333 597.333333 0 0 0-829.44 0 42.666667 42.666667 0 0 0 58.88 61.44 512 512 0 0 1 711.68 0 42.666667 42.666667 0 0 0 29.44 11.946666 42.666667 42.666667 0 0 0 30.72-13.226666 42.666667 42.666667 0 0 0-1.28-60.16z" />
     </svg>
   );
 }
@@ -118,7 +119,7 @@ export function SuccessView() {
           <path d="m8 12.5 2.7 2.7L16 9.5" />
         </svg>
       </div>
-      <div className="wifi-center-title">配网完成</div>
+      <div className="wifi-center-title">已连接 Wi-Fi</div>
       <p className="wifi-hint">
         设备已连接<span className="wifi-ssid-name">{lastSsid}</span>
         <br />手机连接同一网络后，<br />用下面的 IP 地址访问设备
@@ -128,7 +129,7 @@ export function SuccessView() {
       ) : (
         ip && (
           <button type="button" className="wifi-done" onClick={copyAndClose}>
-            <span>复制并关闭配网热点</span>
+            <span>复制地址并关闭热点</span>
             {copied ? <span className="wifi-url-copied">已复制 ✓</span> : null}
           </button>
         )
@@ -149,7 +150,7 @@ export function SuccessView() {
       {!closed && (
         <div className="wifi-grace-count">
           {countdown > 0
-            ? `配网热点将在 ${countdown}s 后自动关闭`
+            ? `热点将在 ${countdown}s 后自动关闭`
             : `热点已自动关闭，请连接 ${lastSsid} 后访问设备`}
         </div>
       )}
@@ -317,7 +318,7 @@ export function ProvisionView() {
 
   return (
     <div className="wifi-page">
-      <header className="wifi-nav"><h1>WiFi 配网</h1></header>
+      <header className="wifi-nav"><h1>连接 Wi-Fi</h1></header>
 
       <div className="wifi-group">
         <div className="wifi-listhead">

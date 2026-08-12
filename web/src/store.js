@@ -5,8 +5,6 @@ export const statusText = signal('连接中…');
 export const dotColor = signal('#9a9386');
 export const connected = signal(false);
 export const capsLocked = signal(false);
-export const floppyOn = signal(false);
-export const floppyTitle = signal('软盘：未插入');
 export const toastMsg = signal('');
 export const toastErr = signal(false);
 export const upBusy = signal(false);
@@ -174,10 +172,7 @@ export function sendReboot() {
 }
 
 function handleStatusFrame(f) {
-  if (f[1] === 0x01) {   /* floppy */
-    const ins = f[2] === 1;
-    floppyOn.value = ins;
-    floppyTitle.value = ins ? '软盘：已插入' : '软盘：未插入';
+  if (f[1] === 0x01) {   /* floppy — no longer surfaced in the UI */
   }
 }
 

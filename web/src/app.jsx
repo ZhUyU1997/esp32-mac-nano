@@ -4,7 +4,7 @@ import { Touchpad } from './touchpad.jsx';
 import { Keyboard } from './keyboard.jsx';
 import { FloppyRow } from './floppy.jsx';
 import { ScreenshotModal } from './screenshot.jsx';
-import { sendSysKey, sendFlashMode, sendReboot, dotColor, statusText, floppyOn, floppyTitle, toastMsg, toastErr, showToast } from './store.js';
+import { sendSysKey, sendFlashMode, sendReboot, dotColor, statusText, toastMsg, toastErr, showToast } from './store.js';
 
 /* Fullscreen (Android Edge/Chrome support Fullscreen API; iOS doesn't → prompt to use Add to Home Screen) */
 function FullscreenBtn() {
@@ -35,19 +35,9 @@ function FullscreenBtn() {
 }
 
 /* Status-bar dropdown menu: device actions (enter Recover/Update, etc.) */
-function DeviceMenu() {
-  const [open, setOpen] = useState(false);
-  const ref = useRef(null);
-  useEffect(() => {
-    if (!open) return;
-    const onDoc = (e) => {
-      if (ref.current && !ref.current.contains(e.target)) setOpen(false);
-    };
-    document.addEventListener('pointerdown', onDoc);
-    return () => document.removeEventListener('pointerdown', onDoc);
-  }, [open]);
+function DeviceMenu({ open, setOpen }) {
   return (
-    <div className="devmenu" ref={ref}>
+    <>
       <button className="devmenu-btn" title="设备" onClick={() => setOpen(!open)}>&#8943;</button>
       {open && (
         <div className="devmenu-pop">
@@ -74,18 +64,29 @@ function DeviceMenu() {
           </button>
         </div>
       )}
-    </div>
+    </>
   );
 }
 
 function StatusBar() {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e) => {
+      if (ref.current && !ref.current.contains(e.target)) setOpen(false);
+    };
+    document.addEventListener('pointerdown', onDoc);
+    return () => document.removeEventListener('pointerdown', onDoc);
+  }, [open]);
   return (
     <div className="status">
       <span id="dot" style={{ background: dotColor.value }}></span>
       <span id="st">{statusText.value}</span>
-      <span className={'floppyicon' + (floppyOn.value ? ' on' : '')} id="floppyIcon" title={floppyTitle.value}></span>
-      <FullscreenBtn />
-      <DeviceMenu />
+      <div className="dev-actions" ref={ref}>
+        <FullscreenBtn />
+        <DeviceMenu open={open} setOpen={setOpen} />
+      </div>
     </div>
   );
 }
@@ -124,7 +125,7 @@ export function App() {
     <div className="remote-shell">
       <StatusBar />
       <div className="main-col">
-        <div className="panel padwrap"><Touchpad /></div>
+        <Touchpad />
       </div>
       <div className="landscape-side">
         <MenuRow />
