@@ -9,6 +9,8 @@
 #include "term_render.h"
 #include "vga8x16.h"
 #include "unicode_glyph.h"
+#include "symbol_glyphs.h"
+#include "emoji_glyphs.h"
 
 /* ---- CP437: Unicode -> IBM VGA code page ------------------------------ */
 
@@ -22,7 +24,13 @@ static const struct { uint32_t uni; uint8_t cp; } k_cp437_map[] = {
 	{ 0x2563, 0xB9 }, { 0x2566, 0xCA }, { 0x2569, 0xCB }, { 0x256C, 0xCE },
 	{ 0x2580, 0xDF }, { 0x2584, 0xDC }, { 0x2588, 0xDB }, { 0x2591, 0xB0 },
 	{ 0x2592, 0xB2 }, { 0x2593, 0xB1 }, { 0x25A0, 0xFE }, { 0x2014, 0xC4 },
+	/* Latin-1 symbols that exist in CP437 */
 	{ 0x00B0, 0xF8 }, { 0x00B1, 0xF1 }, { 0x00B7, 0xFA }, { 0x00B2, 0xFD },
+	{ 0x00F7, 0xF6 }, { 0x00BD, 0xAB }, { 0x00BC, 0xAC },
+	{ 0x00A1, 0xAD }, { 0x00AB, 0xAE }, { 0x00BB, 0xAF }, { 0x00BF, 0xA8 },
+	{ 0x00A2, 0x9B }, { 0x00A3, 0x9C }, { 0x00A5, 0x9D },
+	/* NOTE: U+00D7 (×) has NO CP437 equivalent (0xD7 is Φ); it comes from
+	 * the symbol table. */
 };
 
 uint8_t term_unicode_to_cp437(uint32_t cp)
@@ -82,8 +90,100 @@ static bool paint_cjk(term_renderer_t *r, int row, int col, uint32_t cp,
 	return true;
 }
 
+/* ---- TUI symbols: Unicode -> glyph (binary search) ---------------------- */
+
+static const uint8_t *symbol_glyph(uint32_t cp, int *width)
+{
+	int lo = 0, hi = SYMBOL_GLYPH_COUNT - 1;
+	while (lo <= hi) {
+		int mid = (lo + hi) / 2;
+		if (k_symbol_glyphs[mid].uni == cp) {
+			*width = k_symbol_glyphs[mid].w;
+			return k_symbol_glyphs[mid].glyph;
+		}
+		if (k_symbol_glyphs[mid].uni < cp)
+			lo = mid + 1;
+		else
+			hi = mid - 1;
+	}
+	return NULL;
+}
+
+/* ---- emoji: Unicode -> 16x16 glyph (binary search) --------------------- */
+
+static const uint8_t *emoji_glyph(uint32_t cp)
+{
+	int lo = 0, hi = EMOJI_GLYPH_COUNT - 1;
+	while (lo <= hi) {
+		int mid = (lo + hi) / 2;
+		if (k_emoji_glyphs[mid].uni == cp)
+			return k_emoji_glyphs[mid].glyph;
+		if (k_emoji_glyphs[mid].uni < cp)
+			lo = mid + 1;
+		else
+			hi = mid - 1;
+	}
+	return NULL;
+}
+
+/* paint a full-width 16x16 emoji spanning two cell columns */
+static bool paint_emoji(term_renderer_t *r, int row, int col, uint32_t cp,
+                        uint32_t on, uint32_t off)
+{
+	const uint8_t *g = emoji_glyph(cp);
+	if (!g)
+		return false;
+	const int px0 = col * TERM_CELL_W;
+	const int py0 = row * TERM_CELL_H;
+	for (int gy = 0; gy < 16; gy++) {
+		uint8_t lo = g[gy * 2], hi = g[gy * 2 + 1];
+		for (int gx = 0; gx < 16; gx++) {
+			uint8_t byte = (gx < 8) ? lo : hi;
+			bool set = (byte >> (7 - (gx & 7))) & 1;
+			r->pixels[(py0 + gy) * r->win_w + (px0 + gx)] = set ? on : off;
+		}
+	}
+	return true;
+}
+
+/* ---- Unicode whitespace: render as blank cells (not placeholders) ------ */
+
+static bool is_space_cp(uint32_t cp)
+{
+	return cp == 0x20 || cp == 0xA0 ||
+	       (cp >= 0x2000 && cp <= 0x200A) || cp == 0x202F || cp == 0x205F ||
+	       cp == 0x3000;
+}
+
 /* paint one cell (row r, col c) into the pixel buffer */
-static void paint_cell(term_renderer_t *r, int row, int col)
+static bool is_wide_glyph_cp(uint32_t cp)
+{
+	/* 16x16 symbols and emoji render 16px wide even when layout width is
+	 * 1; 8x16 glyphs fit their cell exactly */
+	if (emoji_glyph(cp))
+		return true;
+	int sw = 1;
+	if (symbol_glyph(cp, &sw) != NULL)
+		return sw >= 2;
+	return false;
+}
+
+/* Unicode whitespace: blank cell, honouring double-width (U+3000).
+ * A cell covered by a wide glyph's overflow (wide_occ) is left alone so
+ * the 16px glyph stays visible. */
+static void paint_blank(term_renderer_t *r, int row, int col, int px0, int py0,
+                        int w, uint32_t on_b, uint32_t off_b, bool covered)
+{
+	if (covered)
+		return;
+	for (int y = 0; y < TERM_CELL_H; y++)
+		for (int x = 0; x < w * TERM_CELL_W; x++)
+		r->pixels[(py0 + y) * r->win_w + (px0 + x)] = off_b;
+}
+
+/* paint a single cell.  wide_occ[col] is true when a preceding wide glyph
+ * (16px render with 1-cell layout) already painted into this column. */
+static void paint_cell(term_renderer_t *r, int row, int col, const bool *wide_occ)
 {
 	VTermScreenCell cell;
 	bool have = false;
@@ -176,6 +276,20 @@ static void paint_cell(term_renderer_t *r, int row, int col)
 	const int px0 = col * TERM_CELL_W;
 	const int py0 = row * TERM_CELL_H;
 
+	/* Unicode whitespace: blank cell, honouring double-width (U+3000) */
+	if (is_space_cp(cp)) {
+		int w = (cell.width >= 2) ? 2 : 1;
+		paint_blank(r, row, col, px0, py0, w, on_b, off_b, wide_occ[col]);
+		/* underline/strike still apply to blank cells */
+		if (cell.attrs.underline)
+			for (int x = 0; x < w * TERM_CELL_W; x++)
+				r->pixels[(py0 + TERM_CELL_H - 1) * r->win_w + (px0 + x)] = on_b;
+		if (cell.attrs.strike)
+			for (int x = 0; x < w * TERM_CELL_W; x++)
+				r->pixels[(py0 + TERM_CELL_H / 2) * r->win_w + (px0 + x)] = on_b;
+		return;
+	}
+
 	/* SGR 5 blink: hide the glyph on the dark phase of the blink clock */
 	if (cell.attrs.blink && !r->blink_on) {
 		for (int y = 0; y < TERM_CELL_H; y++)
@@ -203,10 +317,44 @@ static void paint_cell(term_renderer_t *r, int row, int col)
 					r->pixels[(py0 + TERM_CELL_H / 2) * r->win_w + (px0 + x)] = on_b;
 			return;
 		}
-		/* unmapped: draw a hollow box placeholder */
+		/* emoji: 16x16, rendered even when layout width is 1 (wide glyph) */
+		if (paint_emoji(r, row, col, cp, on_b, off_b))
+			return;
+		/* TUI symbols from unifont: fixed 16px height, natural width — a
+		 * 16x16 source renders 16px wide (may spill into the next cell),
+		 * an 8x16 source renders 8px */
+		int sw = 1;
+		const uint8_t *sg = NULL;
+		if (cell.width >= 2)
+			sg = emoji_glyph(cp);    /* full-width emoji */
+		if (!sg)
+			sg = symbol_glyph(cp, &sw);
+		if (sg) {
+			if (sw >= 2) {
+				for (int gy = 0; gy < 16; gy++) {
+					uint8_t lo = sg[gy * 2], hi = sg[gy * 2 + 1];
+					for (int gx = 0; gx < 16; gx++) {
+						uint8_t byte = (gx < 8) ? lo : hi;
+						bool set = (byte >> (7 - (gx & 7))) & 1;
+						r->pixels[(py0 + gy) * r->win_w + (px0 + gx)] = set ? on_b : off_b;
+					}
+				}
+			} else {
+				for (int gy = 0; gy < TERM_CELL_H; gy++) {
+					uint8_t line = sg[gy];
+					for (int gx = 0; gx < TERM_CELL_W; gx++) {
+						bool set = (line >> (7 - gx)) & 1;
+						r->pixels[(py0 + gy) * r->win_w + (px0 + gx)] = set ? on_b : off_b;
+					}
+				}
+			}
+			return;
+		}
+		/* unmapped: draw a hollow box placeholder spanning the cell width */
+		int pw = (cell.width >= 2) ? 2 : 1;
 		for (int y = 0; y < TERM_CELL_H; y++) {
-			for (int x = 0; x < TERM_CELL_W; x++) {
-				bool edge = (x == 0 || y == 0 || x == TERM_CELL_W - 1 || y == TERM_CELL_H - 1);
+			for (int x = 0; x < pw * TERM_CELL_W; x++) {
+				bool edge = (x == 0 || y == 0 || x == pw * TERM_CELL_W - 1 || y == TERM_CELL_H - 1);
 				r->pixels[(py0 + y) * r->win_w + (px0 + x)] = edge ? on_b : off_b;
 			}
 		}
@@ -276,8 +424,22 @@ void term_render_frame(term_renderer_t *r)
 					r->sel_line_end = col;
 			}
 		}
+		bool wide_occ[512];
 		for (int col = 0; col < r->cols; col++)
-			paint_cell(r, row, col);
+			wide_occ[col] = false;
+		/* pass 1: mark columns covered by a 1-cell-layout glyph that
+		 * renders 16px wide (geometry/ballot boxes/emoji) */
+		for (int col = 0; col < r->cols - 1; col++) {
+			VTermScreenCell cell;
+			VTermPos p = { .row = row, .col = col };
+			if (!vterm_screen_get_cell(r->screen, p, &cell))
+				continue;
+			if (cell.width < 2 && cell.chars[0] && cell.chars[0] != (uint32_t)-1 &&
+			    is_wide_glyph_cp(cell.chars[0]))
+				wide_occ[col + 1] = true;
+		}
+		for (int col = 0; col < r->cols; col++)
+			paint_cell(r, row, col, wide_occ);
 	}
 }
 

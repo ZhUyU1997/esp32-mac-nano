@@ -285,6 +285,15 @@ static void reset_scrollback(void)
 	}
 }
 
+/* typing invalidates the active selection (xterm behaviour) */
+static void clear_selection(void)
+{
+	if (s_renderer.sel_active) {
+		s_renderer.sel_active = false;
+		s_dirty = true;
+	}
+}
+
 /* ---- clipboard paste (Ctrl+Shift+V / Shift+Insert) --------------------- */
 
 static void paste_clipboard(void)
@@ -321,10 +330,12 @@ static void handle_keydown(const SDL_Event *ev)
 
 	/* paste: Ctrl+Shift+V or Shift+Insert (Ctrl+V stays a shell key) */
 	if (kc == SDLK_v && (mod & KMOD_CTRL) && (mod & KMOD_SHIFT)) {
+		clear_selection();
 		paste_clipboard();
 		return;
 	}
 	if (kc == SDLK_INSERT && (mod & KMOD_SHIFT)) {
+		clear_selection();
 		paste_clipboard();
 		return;
 	}
@@ -340,6 +351,9 @@ static void handle_keydown(const SDL_Event *ev)
 		s_dirty = true;
 		return;
 	}
+
+	/* any other key press drops the selection (content will change) */
+	clear_selection();
 
 	VTermModifier vm = VTERM_MOD_NONE;
 	if (mod & KMOD_SHIFT) vm |= VTERM_MOD_SHIFT;
@@ -795,6 +809,7 @@ int main(int argc, char **argv)
 					if (m & KMOD_SHIFT) vm |= VTERM_MOD_SHIFT;
 					if (m & KMOD_ALT) vm |= VTERM_MOD_ALT;
 					reset_scrollback();
+					clear_selection();
 					vterm_keyboard_unichar(s_vt, cp, vm);
 				}
 				break;

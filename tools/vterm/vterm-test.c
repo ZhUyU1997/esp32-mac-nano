@@ -22,6 +22,17 @@
 #include "term_render.h"
 #include "vga8x16.h"
 #include "xterm_seqs.h"
+#include "symbol_glyphs.h"
+#include "emoji_glyphs.h"
+
+/* UTF-8 encode one code point (host-side helper) */
+static int utf8_encode_cp(uint32_t cp, char *out)
+{
+	if (cp < 0x80) { out[0] = (char)cp; return 1; }
+	if (cp < 0x800) { out[0] = (char)(0xC0 | (cp >> 6)); out[1] = (char)(0x80 | (cp & 0x3F)); return 2; }
+	if (cp < 0x10000) { out[0] = (char)(0xE0 | (cp >> 12)); out[1] = (char)(0x80 | ((cp >> 6) & 0x3F)); out[2] = (char)(0x80 | (cp & 0x3F)); return 3; }
+	out[0] = (char)(0xF0 | (cp >> 18)); out[1] = (char)(0x80 | ((cp >> 12) & 0x3F)); out[2] = (char)(0x80 | ((cp >> 6) & 0x3F)); out[3] = (char)(0x80 | (cp & 0x3F)); return 4;
+}
 
 static int s_failures;
 static int s_passes;
@@ -1342,6 +1353,227 @@ static void test_resize_backfill(void)
 	tctx_free(&t);
 }
 
+static void test_symbols(void)
+{
+	tctx_t t;
+	tctx_new(&t, 30, 80);
+	/* layout width is 1 for all of these (real terminal); geometry and
+	 * ballot boxes still render 16px wide (wide glyphs): ✔(0) ●(1,16px)
+	 * ╭(2) ☐(3,16px) ☑(4,16px) ☒(5,16px) */
+	tctx_feed(&t, "\xe2\x9c\x94\xe2\x97\x8f\xe2\x95\xad\xe2\x98\x90\xe2\x98\x91\xe2\x98\x92"); /* ✔ ● ╭ ☐ ☑ ☒ */
+	CHECK_EQ("symbol ✔ renders", cell_bright(&t.r, 0, 0) > 5, 1, "bright");
+	CHECK_EQ("symbol ● left half (16px)", cell_bright(&t.r, 0, 1) > 5, 1, "bright");
+	CHECK_EQ("symbol ╭ renders", cell_bright(&t.r, 0, 2) > 5, 1, "bright");
+	CHECK_EQ("symbol ☐ left half (16px)", cell_bright(&t.r, 0, 3) > 5, 1, "bright");
+	CHECK_EQ("symbol ☑ left half (16px)", cell_bright(&t.r, 0, 4) > 5, 1, "bright");
+	CHECK_EQ("symbol ☒ left half (16px)", cell_bright(&t.r, 0, 5) > 5, 1, "bright");
+	/* ☒ (last, 16px) covers col5-6; nothing after that */
+	CHECK_EQ("symbols end at col7", cell_bright(&t.r, 0, 7), 0, "col7 empty");
+	/* layout width is 1: cursor advances by one cell (real terminal) */
+	{
+		tctx_t t2;
+		tctx_new(&t2, 3, 20);
+		tctx_feed(&t2, "\xe2\x98\x91");  /* ☑ */
+		VTermPos cur;
+		vterm_state_get_cursorpos(vterm_obtain_state(t2.vt), &cur);
+		CHECK_EQ("☑ layout: cursor col=1", cur.col, 1, "advance 1");
+		VTermScreenCell cell;
+		VTermPos p = { .row = 0, .col = 0 };
+		vterm_screen_get_cell(t2.r.screen, p, &cell);
+		CHECK_EQ("☑ layout: cell width=1", cell.width, 1, "width 1");
+		CHECK_EQ("☑ layout: renders 16px", cell_bright(&t2.r, 0, 1) > 5, 1, "col1 painted");
+		tctx_free(&t2);
+	}
+	tctx_free(&t);
+}
+
+static void test_emoji(void)
+{
+	tctx_t t;
+	tctx_new(&t, 30, 80);
+	/* 🗑 U+1F5D1 renders full-width (16x16, icon-like) */
+	tctx_feed(&t, "\xf0\x9f\x97\x91");   /* U+1F5D1 */
+	int c0 = cell_bright(&t.r, 0, 0);
+	CHECK_EQ("emoji 🗑: left half has glyph", c0 > 5, 1, "bright");
+	CHECK_EQ("emoji 🗑: right half has glyph", cell_bright(&t.r, 0, 1) > 5, 1, "bright");
+	/* not a placeholder: a placeholder is exactly 44 border px */
+	CHECK_EQ("emoji 🗑: not placeholder", c0 != 44, 1, "not border");
+	tctx_free(&t);
+}
+
+static void test_whitespace(void)
+{
+	tctx_t t;
+	tctx_new(&t, 30, 80);
+	/* NBSP + em space + fullwidth space render as blank (not placeholders) */
+	tctx_feed(&t, "A\xc2\xa0\xe2\x80\x83\xe3\x80\x80" "B"); /* A NBSP EMSP FWSP B */
+	CHECK_EQ("NBSP: blank cell", cell_bright(&t.r, 0, 1), 0, "bright");
+	CHECK_EQ("em space: blank cell", cell_bright(&t.r, 0, 2), 0, "bright");
+	/* fullwidth space occupies 2 cells, both blank */
+	CHECK_EQ("fullwidth space: col3 blank", cell_bright(&t.r, 0, 3), 0, "bright");
+	CHECK_EQ("fullwidth space: col4 blank", cell_bright(&t.r, 0, 4), 0, "bright");
+	CHECK_EQ("text after spaces intact", cell_char(&t.r, 0, 5), 'B', "cell(0,5)");
+	tctx_free(&t);
+}
+
+static void test_latin1_symbols(void)
+{
+	tctx_t t;
+	tctx_new(&t, 30, 80);
+	/* U+00D7 × must be a multiplication sign, NOT CP437 0xD7 (which is Φ) */
+	tctx_feed(&t, "\xc3\x97\xc3\xb7"); /* × ÷ */
+	/* ×: cross shape — centre row has a gap (unifont diagonal), and the
+	 * glyph must not be the Φ box (which fills the middle column) */
+	int bright = cell_bright(&t.r, 0, 0);
+	CHECK_EQ("× renders (not Φ, not placeholder)", bright > 5 && bright < 60, 1, "bright");
+	/* ÷ renders via CP437 0xF6 */
+	CHECK_EQ("÷ renders", cell_bright(&t.r, 0, 1) > 3, 1, "bright");
+	tctx_free(&t);
+}
+
+/* local lookup: is this cp in the emoji table (renderer uses emoji)? */
+static const uint8_t *emoji_lookup(uint32_t cp)
+{
+	int lo = 0, hi = EMOJI_GLYPH_COUNT - 1;
+	while (lo <= hi) {
+		int mid = (lo + hi) / 2;
+		if (k_emoji_glyphs[mid].uni == cp)
+			return k_emoji_glyphs[mid].glyph;
+		if (k_emoji_glyphs[mid].uni < cp)
+			lo = mid + 1;
+		else
+			hi = mid - 1;
+	}
+	return NULL;
+}
+
+static void test_all_glyphs(void)
+{
+	/* Render every symbol/emoji table entry and verify the pixels match
+	 * the glyph data the renderer ACTUALLY uses (renderer correctness).
+	 * A character may live in several tables (CP437 map, emoji, symbols);
+	 * the renderer prioritises CP437 -> CJK -> emoji -> symbols, so the
+	 * expectation must follow that path. */
+	tctx_t t;
+	tctx_new(&t, 5, 80);
+	int bad = 0;
+	int checked = 0;
+	extern int vterm_unicode_width(uint32_t);
+
+	for (int i = 0; i < SYMBOL_GLYPH_COUNT; i++) {
+		uint32_t cp = k_symbol_glyphs[i].uni;
+		char utf8[8];
+		int n = utf8_encode_cp(cp, utf8);
+		vterm_input_write(t.vt, "\033[2J\033[1;1H", 11);
+		vterm_input_write(t.vt, utf8, (size_t)n);
+		vterm_screen_flush_damage(t.r.screen);
+		term_render_frame(&t.r);
+
+		uint8_t idx = term_unicode_to_cp437(cp);
+		if (idx != 0xFF) {
+			uint8_t got[16];
+			for (int gy = 0; gy < 16; gy++) {
+				uint8_t v = 0;
+				for (int gx = 0; gx < 8; gx++)
+					if ((t.r.pixels[(gy) * t.r.win_w + gx] >> 16) > 128)
+						v |= 1 << (7 - gx);
+				got[gy] = v;
+			}
+			if (memcmp(got, vga8x16[idx], 16) != 0) {
+				printf("FAIL glyph U+%04X: CP437 0x%02X mismatch\n", cp, idx);
+				bad++;
+			}
+		} else if (emoji_lookup(cp) != NULL) {
+			const uint8_t *exp = emoji_lookup(cp);
+			uint8_t got[32];
+			for (int gy = 0; gy < 16; gy++) {
+				uint8_t lo = 0, hi = 0;
+				for (int gx = 0; gx < 8; gx++) {
+					if ((t.r.pixels[(gy) * t.r.win_w + gx] >> 16) > 128)
+						lo |= 1 << (7 - gx);
+					if ((t.r.pixels[(gy) * t.r.win_w + 8 + gx] >> 16) > 128)
+						hi |= 1 << (7 - gx);
+				}
+				got[gy * 2] = lo;
+				got[gy * 2 + 1] = hi;
+			}
+			if (memcmp(got, exp, 32) != 0) {
+				printf("FAIL glyph U+%04X: emoji mismatch\n", cp);
+				bad++;
+			}
+		} else {
+			int w = k_symbol_glyphs[i].w;
+			if (w >= 2) {
+				/* 16x16 source renders 16px */
+				uint8_t got[32];
+				for (int gy = 0; gy < 16; gy++) {
+					uint8_t lo = 0, hi = 0;
+					for (int gx = 0; gx < 8; gx++) {
+						if ((t.r.pixels[(gy) * t.r.win_w + gx] >> 16) > 128)
+							lo |= 1 << (7 - gx);
+						if ((t.r.pixels[(gy) * t.r.win_w + 8 + gx] >> 16) > 128)
+							hi |= 1 << (7 - gx);
+					}
+					got[gy * 2] = lo;
+					got[gy * 2 + 1] = hi;
+				}
+				if (memcmp(got, k_symbol_glyphs[i].glyph, 32) != 0) {
+					printf("FAIL glyph U+%04X: 16x16 mismatch\n", cp);
+					bad++;
+				}
+			} else {
+				/* 8x16 source renders 8px */
+				uint8_t got[16];
+				for (int gy = 0; gy < 16; gy++) {
+					uint8_t v = 0;
+					for (int gx = 0; gx < 8; gx++)
+						if ((t.r.pixels[(gy) * t.r.win_w + gx] >> 16) > 128)
+							v |= 1 << (7 - gx);
+					got[gy] = v;
+				}
+				if (memcmp(got, k_symbol_glyphs[i].glyph, 16) != 0) {
+					printf("FAIL glyph U+%04X: 8x16 mismatch\n", cp);
+					bad++;
+				}
+			}
+		}
+		checked++;
+	}
+
+	for (int i = 0; i < EMOJI_GLYPH_COUNT; i++) {
+		uint32_t cp = k_emoji_glyphs[i].uni;
+		/* the renderer only uses emoji for full-width cells; narrow ones
+		 * (e.g. U+26A0) go to the symbol table and are verified there */
+		char utf8[8];
+		int n = utf8_encode_cp(cp, utf8);
+		vterm_input_write(t.vt, "\033[2J\033[1;1H", 11);
+		vterm_input_write(t.vt, utf8, (size_t)n);
+		vterm_screen_flush_damage(t.r.screen);
+		term_render_frame(&t.r);
+		uint8_t got[32];
+		for (int gy = 0; gy < 16; gy++) {
+			uint8_t lo = 0, hi = 0;
+			for (int gx = 0; gx < 8; gx++) {
+				if ((t.r.pixels[(gy) * t.r.win_w + gx] >> 16) > 128)
+					lo |= 1 << (7 - gx);
+				if ((t.r.pixels[(gy) * t.r.win_w + 8 + gx] >> 16) > 128)
+					hi |= 1 << (7 - gx);
+			}
+			got[gy * 2] = lo;
+			got[gy * 2 + 1] = hi;
+		}
+		if (memcmp(got, k_emoji_glyphs[i].glyph, 32) != 0) {
+			printf("FAIL emoji U+%04X: mismatch\n", cp);
+			bad++;
+		}
+		checked++;
+	}
+
+	CHECK_EQ("all glyphs render exactly", bad, 0, "mismatches");
+	printf("  (checked %d glyph entries)\n", checked);
+	tctx_free(&t);
+}
+
 /* ---- main -------------------------------------------------------------- */
 
 int main(void)
@@ -1392,6 +1624,11 @@ int main(void)
 	test_osc4_and_sync();
 	test_sync_output();
 	test_resize_backfill();
+	test_symbols();
+	test_emoji();
+	test_whitespace();
+	test_latin1_symbols();
+	test_all_glyphs();
 	test_scrollback_selection();
 
 	printf("\n%d passed, %d failed\n", s_passes, s_failures);

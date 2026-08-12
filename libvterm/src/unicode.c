@@ -299,10 +299,35 @@ static const struct interval fullwidth[] = {
 #include "fullwidth.inc"
 };
 
+#include "combining.inc"
+#include "false_zero.inc"
+
+static bool combining_zero_p(uint32_t codepoint)
+{
+  return bisearch(codepoint, combining_zero,
+                  sizeof(combining_zero) / sizeof(combining_zero[0]) - 1);
+}
+
+static bool kuhn_false_zero_p(uint32_t codepoint)
+{
+  for (size_t i = 0; i < sizeof(kuhn_false_zero) / sizeof(kuhn_false_zero[0]); i++)
+    if (codepoint == kuhn_false_zero[i])
+      return true;
+  return false;
+}
+
 INTERNAL int vterm_unicode_width(uint32_t codepoint)
 {
+  /* zero-width combining characters, from glibc wcwidth */
+  if(combining_zero_p(codepoint))
+    return 0;
+
   if(bisearch(codepoint, fullwidth, sizeof(fullwidth) / sizeof(fullwidth[0]) - 1))
     return 2;
+
+  /* Kuhn's combining table is outdated: glibc reports these as 1-wide */
+  if(kuhn_false_zero_p(codepoint))
+    return 1;
 
   return mk_wcwidth(codepoint);
 }
