@@ -199,6 +199,9 @@ void macplus_input_poll(macplus_t *s)
 				mac_set_pause(s, !mac_get_pause(s));
 			}
 			break;
+		case INPUT_EVT_MOUSE_WHEEL:
+			/* Mac side has no wheel consumer; the vterm mode uses it */
+			break;
 		}
 	}
 }

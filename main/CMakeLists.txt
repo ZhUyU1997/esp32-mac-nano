@@ -75,6 +75,20 @@ idf_component_register(SRCS
     "core/macplus/cpu/musashi/m68kopnz.c"
     "core/macplus/cpu/musashi/m68kopdm.c"
     "core/macplus/cpu/musashi/m68kopac.c"
+    # ---- vterm: vendored libvterm + platform-free renderer ----
+    "../libvterm/src/vterm.c"
+    "../libvterm/src/state.c"
+    "../libvterm/src/parser.c"
+    "../libvterm/src/screen.c"
+    "../libvterm/src/pen.c"
+    "../libvterm/src/encoding.c"
+    "../libvterm/src/unicode.c"
+    "../libvterm/src/keyboard.c"
+    "../libvterm/src/mouse.c"
+    "arch/esp32/mach-s3/vterm/term_render.c"
+    "arch/esp32/mach-s3/vterm/vterm_esp32.c"
+    "arch/esp32/mach-s3/vterm/vterm_hid_map.c"
+    "arch/esp32/mach-s3/vterm/vterm_telnet.c"
     # LDFRAGMENTS
     #     "musashi_iram.lf"
     INCLUDE_DIRS 
@@ -89,6 +103,10 @@ idf_component_register(SRCS
         "driver"
         "core/macplus/include"
         "core/macplus/cpu/musashi"
+        "../libvterm/include"
+        "../libvterm/src"
+        "../tools/vterm"
+        "arch/esp32/mach-s3/vterm"
     EMBED_FILES
         "../macintosh/rom.bin"
         "../macintosh/pcex/pcex_mmio.rom"
@@ -122,3 +140,17 @@ target_compile_definitions(${COMPONENT_TARGET} PRIVATE MAC_TRAP_LOG=0)
 
 
 target_compile_options(${COMPONENT_TARGET} PRIVATE -Wno-error=format -Wno-error=unused-const-variable -Wno-error=format-overflow -Wno-error=array-bounds)
+
+# vendored libvterm: silence warnings (false positives on the CSI state
+# machine); the rest of main stays -Wall-clean
+set_source_files_properties(
+    ../libvterm/src/vterm.c
+    ../libvterm/src/state.c
+    ../libvterm/src/parser.c
+    ../libvterm/src/screen.c
+    ../libvterm/src/pen.c
+    ../libvterm/src/encoding.c
+    ../libvterm/src/unicode.c
+    ../libvterm/src/keyboard.c
+    ../libvterm/src/mouse.c
+    PROPERTIES COMPILE_OPTIONS "-w")

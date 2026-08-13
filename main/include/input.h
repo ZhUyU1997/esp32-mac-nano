@@ -10,6 +10,7 @@ typedef enum {
 	INPUT_EVT_MOUSE_MOVE_ABS,
 	INPUT_EVT_MOUSE_DOWN,
 	INPUT_EVT_MOUSE_UP,
+	INPUT_EVT_MOUSE_WHEEL,
 } input_kind_t;
 
 typedef enum {
@@ -157,6 +158,9 @@ typedef struct {
 		struct {
 			input_mouse_button_t button;
 		} mouse_button;
+		struct {
+			int steps; /* +1 scroll up, -1 scroll down */
+		} mouse_wheel;
 	} u;
 } input_evt_t;
 
@@ -165,6 +169,7 @@ void input_post_mouse_move_rel(int dx, int dy);
 void input_post_mouse_move_abs(uint16_t x, uint16_t y);
 void input_post_mouse_down(input_mouse_button_t button);
 void input_post_mouse_up(input_mouse_button_t button);
+void input_post_mouse_wheel(int steps);
 void input_report_mouse_button(input_mouse_button_t button, bool pressed);
 void input_report_keyboard(uint8_t mod, const uint8_t keys[6]);
 

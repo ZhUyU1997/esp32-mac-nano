@@ -40,6 +40,12 @@
 
 static const char *TAG = "mach-s3";
 
+/* VTERM_MODE: replace the Mac pause menu (MODE_UI) with the XT-era
+ * terminal emulator (telnet backend). 1 = enabled, 0 = original pause UI.
+ * The vterm sources are compiled unconditionally; this only gates the
+ * main-loop integration so a disabled build keeps the normal flow. */
+#define VTERM_MODE 1
+
 /* Message internal copies go to PSRAM (internal RAM is scarce). */
 static void *msg_alloc_psram(size_t n)
 {
@@ -306,6 +312,8 @@ void macplus_task(void *args)
 		}
 	}
 
+	/* MODE_UI: pause menu normally; with VTERM_MODE=1 it hosts the vterm
+	 * terminal (enter from the Mac pause state, F10/F12 returns to the Mac). */
 	/* Check upgrade BEFORE heavy MacPlus init (mac_get_instance allocates PSRAM) */
 	if (upgrade_file_exists("/sdcard/upgrade.bin")) {
 		upgrade_ui_show();
@@ -371,6 +379,12 @@ void macplus_task(void *args)
 	 * 60s without activity — the page/pause-menu can re-enable it. */
 	web_control_enable();
 
+	/* M3: telnet server for the vterm mode (port 23) */
+#if VTERM_MODE
+	extern void vterm_telnet_start(void);
+	vterm_telnet_start();
+#endif
+
 	while (true) {
 		if (mode == MODE_MAC) {
 			macplus_run_frame(s);
@@ -382,6 +396,15 @@ void macplus_task(void *args)
 				mode = MODE_UI;
 			}
 		} else {
+#if VTERM_MODE
+			/* MODE_UI temporarily replaced by vterm (M3 prep) */
+			extern bool vterm_esp32_enter(framebuffer_t *lcd, mach_s3_blit_worker_t *blit_worker);
+			if (vterm_esp32_enter(lcd, blit_worker)) {
+				mode = MODE_MAC;
+				mac_set_pause(s, 0);
+				VBUF_MARK_DIRTY(s);
+			}
+#else
 			ui_run_frame(ui);
 			if (ui_pause_take_exit_request(ui)) {
 				int32_t lx, ly;
@@ -393,6 +416,7 @@ void macplus_task(void *args)
 				VBUF_MARK_DIRTY(s);
 				mode = MODE_MAC;
 			}
+#endif
 		}
 	}
 }
@@ -431,7 +455,7 @@ void app_main(void)
 	s_mac_ram_last_block = heap_caps_malloc(MEMMAP_ES, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
 	assert(s_mac_ram_last_block != NULL);
 
-	xTaskCreatePinnedToCore(&macplus_task, "macplus", 10 * 1024, NULL, k_emu_task_priority, NULL, 1);
+	xTaskCreatePinnedToCore(&macplus_task, "macplus", 24 * 1024, NULL, k_emu_task_priority, NULL, 1);
 
 	// ble_hid_host_init();
 	if (!flash_mode_boot) {

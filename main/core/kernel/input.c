@@ -79,6 +79,12 @@ static input_keycode_t hid_kbd_to_input(uint8_t hid)
 	case 0x5f: return INPUT_KEY_KP_7;   case 0x60: return INPUT_KEY_KP_8;
 	case 0x61: return INPUT_KEY_KP_9;   case 0x62: return INPUT_KEY_KP_0;
 	case 0x63: return INPUT_KEY_KP_DOT;
+	case 0x3a: return INPUT_KEY_F1;   case 0x3b: return INPUT_KEY_F2;
+	case 0x3c: return INPUT_KEY_F3;   case 0x3d: return INPUT_KEY_F4;
+	case 0x3e: return INPUT_KEY_F5;   case 0x3f: return INPUT_KEY_F6;
+	case 0x40: return INPUT_KEY_F7;   case 0x41: return INPUT_KEY_F8;
+	case 0x42: return INPUT_KEY_F9;   case 0x43: return INPUT_KEY_F10;
+	case 0x44: return INPUT_KEY_F11;  case 0x45: return INPUT_KEY_F12;
 	case 0x65: return INPUT_KEY_INSERT;
 	case 0x68: return INPUT_KEY_F12;
 	default: return INPUT_KEY_NONE;
@@ -165,6 +171,16 @@ void input_post_mouse_up(input_mouse_button_t button)
 	if (!evt) { input_unlock(); return; }
 	evt->kind = INPUT_EVT_MOUSE_UP;
 	evt->u.mouse_button.button = button;
+	input_unlock();
+}
+
+void input_post_mouse_wheel(int steps)
+{
+	input_lock();
+	input_evt_t *evt = input_reserve();
+	if (!evt) { input_unlock(); return; }
+	evt->kind = INPUT_EVT_MOUSE_WHEEL;
+	evt->u.mouse_wheel.steps = steps;
 	input_unlock();
 }
 

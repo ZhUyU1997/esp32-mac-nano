@@ -117,7 +117,7 @@ static void hid_host_mouse_report_callback(struct hid_device *hdev,
                                            const uint8_t *payload, size_t payload_len)
 {
 	unsigned btn_state = 0;
-	int dx = 0, dy = 0;
+	int dx = 0, dy = 0, wheel = 0;
 
 	for (unsigned i = 0; i < report->maxfield; i++) {
 		struct hid_field *f = report->field[i];
@@ -131,6 +131,8 @@ static void hid_host_mouse_report_callback(struct hid_device *hdev,
 				dx = (int)hid_field_extract(f, payload, payload_len, 0);
 			else if (f->usage_id == HID_GD_Y)
 				dy = (int)hid_field_extract(f, payload, payload_len, 0);
+			else if (f->usage_id == HID_GD_WHEEL)
+				wheel = (int)(int8_t)hid_field_extract(f, payload, payload_len, 0);
 		}
 	}
 
@@ -139,6 +141,8 @@ static void hid_host_mouse_report_callback(struct hid_device *hdev,
 	input_report_mouse_button(INPUT_MOUSE_BTN_MIDDLE,(btn_state & 4u) ? 1u : 0u);
 	if (dx != 0 || dy != 0)
 		input_post_mouse_move_rel(dx, dy);
+	if (wheel != 0)
+		input_post_mouse_wheel(wheel);
 }
 
 /**

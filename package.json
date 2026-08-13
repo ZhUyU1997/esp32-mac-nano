@@ -3,5 +3,8 @@
   "private": true,
   "scripts": {
     "idf-mcp": "pnpm --dir idf-mcp start"
+  },
+  "dependencies": {
+    "node-pty": "^1.1.0"
   }
 }
