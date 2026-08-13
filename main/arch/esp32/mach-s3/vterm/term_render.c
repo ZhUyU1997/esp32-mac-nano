@@ -512,15 +512,10 @@ void term_render_frame(term_renderer_t *r)
 		}
 		/* pass 1: background spans exactly the layout width; pass 2:
 		 * glyphs at natural width (may spill into the next column) */
-		uint32_t t0 = (uint32_t)esp_timer_get_time();
 		for (int col = 0; col < r->cols; col++)
 			paint_background(r, row, col);
-		uint32_t t1 = (uint32_t)esp_timer_get_time();
 		for (int col = 0; col < r->cols; col++)
 			paint_glyph(r, row, col);
-		uint32_t t2 = (uint32_t)esp_timer_get_time();
-		r->prof_bg_us += t1 - t0;
-		r->prof_glyph_us += t2 - t1;
 	}
 }
 
@@ -612,14 +607,9 @@ bool term_render_frame_fb(term_renderer_t *r)
 			s_cell_px0 = col * TERM_CELL_W;
 			s_cell_py0 = row * TERM_CELL_H;
 			memset(s_cell, 0, sizeof(s_cell));
-			uint32_t t0 = (uint32_t)esp_timer_get_time();
 			paint_background(r, row, col);
 			paint_glyph(r, row, col);
-			uint32_t t1 = (uint32_t)esp_timer_get_time();
 			flush_cell_fb(r, (cell.width >= 2) ? 2 : 1);
-			uint32_t t2 = (uint32_t)esp_timer_get_time();
-			r->prof_bg_us += t1 - t0;   /* paint (bg+glyph) */
-			r->prof_glyph_us += t2 - t1; /* flush to fb */
 		}
 	}
 	return true;

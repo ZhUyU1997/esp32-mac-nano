@@ -66,51 +66,6 @@ static void vterm_output_cb(const char *s, size_t len, void *user)
 	(void)vterm_telnet_send((const uint8_t *)s, len);
 }
 
-/* ---- profiler -----------------------------------------------------------
- * Quantitative render/blit timing, reported once per second from the main
- * loop. Used to measure the effect of each rendering optimisation
- * (dirty-rect, on-the-fly rotated render, …). Compile out with
- * VTERM_PROFILE 0. */
-
-#define VTERM_PROFILE 1
-
-#if VTERM_PROFILE
-static uint32_t s_r_cnt, s_r_us, s_r_max;   /* term_render_frame */
-static uint32_t s_b_cnt, s_b_us, s_b_max;   /* vterm_frame_blit */
-static uint32_t s_d_cnt, s_d_cells;         /* damage rects */
-static uint32_t s_bg_us, s_gl_us;           /* render bg/glyph pass split */
-static uint32_t s_loop_cnt;
-static int64_t s_prof_t0;
-
-#define PROF_BEGIN() int64_t _p0 = esp_timer_get_time()
-#define PROF_END(us, max, cnt) do { \
-	uint32_t _p = (uint32_t)(esp_timer_get_time() - _p0); \
-	(us) += _p; if (_p > (max)) (max) = _p; (cnt)++; \
-} while (0)
-
-static void vterm_prof_tick(void)
-{
-	s_loop_cnt++;
-	int64_t now = esp_timer_get_time();
-	if (now - s_prof_t0 < 1000000)
-		return;
-	uint32_t dt = (uint32_t)(now - s_prof_t0);
-	ESP_LOGI(TAG,
-	         "prof: render %u/s avg%uus max%uus (bg%u gl%u) | blit %u/s avg%uus max%uus | loop %u/s | dmg %u ev avg %u cells",
-	         (uint32_t)((uint64_t)s_r_cnt * 1000000 / dt), s_r_cnt ? s_r_us / s_r_cnt : 0, s_r_max,
-	         s_r_cnt ? s_bg_us / s_r_cnt : 0, s_r_cnt ? s_gl_us / s_r_cnt : 0,
-	         (uint32_t)((uint64_t)s_b_cnt * 1000000 / dt), s_b_cnt ? s_b_us / s_b_cnt : 0, s_b_max,
-	         (uint32_t)((uint64_t)s_loop_cnt * 1000000 / dt),
-	         s_d_cnt, s_d_cnt ? s_d_cells / s_d_cnt : 0);
-	s_prof_t0 = now;
-	s_r_cnt = s_r_us = s_r_max = 0;
-	s_b_cnt = s_b_us = s_b_max = 0;
-	s_d_cnt = s_d_cells = 0;
-	s_bg_us = s_gl_us = 0;
-	s_loop_cnt = 0;
-}
-#endif
-
 /* ---- screen callbacks -------------------------------------------------- */
 
 static void dmg_mark_full(void)
@@ -155,10 +110,6 @@ static int vterm_cb_damage(VTermRect rect, void *user)
 	(void)user;
 	s_dirty = true;
 	dmg_add(rect.start_row, rect.end_row - 1, rect.start_col, rect.end_col - 1);
-#if VTERM_PROFILE
-	s_d_cnt++;
-	s_d_cells += (uint32_t)(rect.end_row - rect.start_row) * (rect.end_col - rect.start_col);
-#endif
 	return 1;
 }
 
@@ -401,9 +352,6 @@ static void vterm_frame_blit(framebuffer_t *lcd, void *user_ctx)
 	const int fb_w = (int)lcd->width;           /* 480 */
 	const int fb_h = (int)lcd->height;          /* 640 */
 	uint8_t blk[16][16];
-#if VTERM_PROFILE
-	PROF_BEGIN();
-#endif
 	for (int by = 0; by < src_h; by += 16) {
 		for (int bx = 0; bx < src_w; bx += 16) {
 			/* read the 16x16 block linearly, transposing into blk */
@@ -427,9 +375,6 @@ static void vterm_frame_blit(framebuffer_t *lcd, void *user_ctx)
 	}
 	/* mouse pointer on top */
 	vterm_draw_cursor(lcd, s_mouse_x, s_mouse_y);
-#if VTERM_PROFILE
-	PROF_END(s_b_us, s_b_max, s_b_cnt);
-#endif
 }
 
 /* ---- render helper ------------------------------------------------------ */
@@ -439,8 +384,6 @@ static void vterm_render_if_needed(void)
 	if (s_dirty && !s_sync_update) {
 		s_dirty = false;
 		s_cursor_dirty = false;
-		s_renderer.prof_bg_us = 0;
-		s_renderer.prof_glyph_us = 0;
 		s_renderer.fb_out = s_fb;
 		s_renderer.fb_w = s_fb_w;
 		s_renderer.fb_h = s_fb_h;
@@ -457,9 +400,8 @@ static void vterm_render_if_needed(void)
 		s_dmg_has = false;
 		vterm_ptr_restore(s_lcd); /* remove pointer: a partial render may
 		                           * not repaint its region */
-#if VTERM_PROFILE
-		PROF_BEGIN();
-#endif
+		int r0 = s_renderer.dirty_r0;
+		int r1 = s_renderer.dirty_r1 < 0 ? VTERM_ROWS : s_renderer.dirty_r1;
 		bool fb_ok = term_render_frame_fb(&s_renderer);
 		if (!fb_ok) {
 			/* wide-glyph spill: fall back to s_pixels + full blit */
@@ -467,11 +409,6 @@ static void vterm_render_if_needed(void)
 			term_render_frame(&s_renderer);
 		}
 		s_renderer.fb_out = NULL;
-#if VTERM_PROFILE
-		PROF_END(s_r_us, s_r_max, s_r_cnt);
-		s_bg_us += s_renderer.prof_bg_us;
-		s_gl_us += s_renderer.prof_glyph_us;
-#endif
 		if (fb_ok) {
 			/* frame in fb: overlay the pointer (the pre-render restore
 			 * already cleared the old patch) */
@@ -646,6 +583,7 @@ void vterm_esp32_selftest(framebuffer_t *lcd, mach_s3_blit_worker_t *blit_worker
 	/* clean screen: the telnet host output is the terminal content */
 	vterm_input_write(s_vt, "\033[2J\033[H", 7);
 	vterm_screen_flush_damage(scr);
+
 	/* a fresh session starts with an empty scrollback, no selection, and a
 	 * centred mouse pointer */
 	s_sb_count = 0;
@@ -683,14 +621,12 @@ bool vterm_esp32_enter(framebuffer_t *lcd, mach_s3_blit_worker_t *blit_worker)
 	while (true) {
 		if (input_pop(&evt)) {
 			if (evt.kind == INPUT_EVT_KEY) {
-				ESP_LOGI(TAG, "key evt: code=%d val=%d", evt.u.key.code, evt.u.key.value);
 				if (vterm_hid_mod_event(evt.u.key.code, evt.u.key.value)) {
 					continue; /* modifier tracked, no output */
 				}
 				if (evt.u.key.value) { /* key press */
 					if (evt.u.key.code == INPUT_KEY_F10 ||
 					    evt.u.key.code == INPUT_KEY_F12) {
-						ESP_LOGI(TAG, "vterm: F-key exit");
 						return true;
 					}
 					/* scrollback: Shift+PageUp/Down walk the saved lines;
@@ -739,25 +675,26 @@ bool vterm_esp32_enter(framebuffer_t *lcd, mach_s3_blit_worker_t *blit_worker)
 				vterm_mouse_event(&evt);
 			}
 		} else {
-			/* drain remote telnet bytes into the terminal (no per-chunk
-			 * logging here: hex dumps over UART throttle the drain and
-			 * overflow the input ring) */
+			/* drain remote telnet bytes into the terminal. The first pop
+			 * blocks on the ring semaphore (up to the idle timeout), which
+			 * replaces the per-iteration delay; once data arrives, drain the
+			 * whole ring before rendering once so a big burst (pi -c replays
+			 * ~850 KB of session history) is not throttled to one 1 KB chunk
+			 * per loop. */
 			uint8_t tbuf[1024];
 			size_t tlen = 0;
-			vterm_telnet_pop(tbuf, &tlen, sizeof(tbuf));
-			if (tlen) {
+			vterm_telnet_pop(tbuf, &tlen, sizeof(tbuf), pdMS_TO_TICKS(10));
+			while (tlen) {
 				vterm_input_write(s_vt, (char *)tbuf, tlen);
 				vterm_screen_flush_damage(scr);
+				tlen = 0;
+				vterm_telnet_pop(tbuf, &tlen, sizeof(tbuf), 0);
 			}
 		}
 
 		/* the text cursor stays steady (no blink) */
 
 		vterm_render_if_needed();
-#if VTERM_PROFILE
-		vterm_prof_tick();
-#endif
-		vTaskDelay(pdMS_TO_TICKS(10));
 	}
 	return false;
 }

@@ -46,6 +46,10 @@ static const char *TAG = "mach-s3";
  * main-loop integration so a disabled build keeps the normal flow. */
 #define VTERM_MODE 1
 
+/* VTERM_BOOT: boot straight into vterm (debug convenience — a reset re-runs
+ * the telnet test without pressing F12). Only meaningful with VTERM_MODE=1. */
+#define VTERM_BOOT 0
+
 /* Message internal copies go to PSRAM (internal RAM is scarce). */
 static void *msg_alloc_psram(size_t n)
 {
@@ -373,7 +377,11 @@ void macplus_task(void *args)
 		MODE_MAC = 0,
 		MODE_UI,
 	} mach_s3_mode_t;
+#if VTERM_MODE && VTERM_BOOT
+	mach_s3_mode_t mode = MODE_UI; /* debug: boot straight into vterm */
+#else
 	mach_s3_mode_t mode = MODE_MAC;
+#endif
 
 	/* WiFi remote: default ON (after the upgrade flow). Auto-off after
 	 * 60s without activity — the page/pause-menu can re-enable it. */
@@ -455,7 +463,7 @@ void app_main(void)
 	s_mac_ram_last_block = heap_caps_malloc(MEMMAP_ES, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
 	assert(s_mac_ram_last_block != NULL);
 
-	xTaskCreatePinnedToCore(&macplus_task, "macplus", 24 * 1024, NULL, k_emu_task_priority, NULL, 1);
+	xTaskCreatePinnedToCore(&macplus_task, "macplus", 8 * 1024, NULL, k_emu_task_priority, NULL, 1);
 
 	// ble_hid_host_init();
 	if (!flash_mode_boot) {

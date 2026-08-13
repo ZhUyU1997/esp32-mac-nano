@@ -62,11 +62,14 @@ struct VTermScreen
   unsigned int global_reverse : 1;
   unsigned int reflow : 1;
 
-  /* Primary and Altscreen. buffers[1] is lazily allocated as needed */
-  ScreenCell *buffers[2];
+  /* Primary and Altscreen. buffers[1] is lazily allocated as needed.
+   * Each buffer is an array of row pointers into one contiguous cell block;
+   * a full-screen scroll rotates the pointers (O(rows)) instead of
+   * memmove()ing the whole block. */
+  ScreenCell **buffers[2];
 
   /* buffer will == buffers[0] or buffers[1], depending on altscreen */
-  ScreenCell *buffer;
+  ScreenCell **buffer;
 
   /* buffer for a single screen row used in scrollback storage callbacks */
   VTermScreenCell *sb_buffer;
@@ -86,20 +89,36 @@ static inline ScreenCell *getcell(const VTermScreen *screen, int row, int col)
     return NULL;
   if(col < 0 || col >= screen->cols)
     return NULL;
-  return screen->buffer + (screen->cols * row) + col;
+  return screen->buffer[row] + col;
 }
 
-static ScreenCell *alloc_buffer(VTermScreen *screen, int rows, int cols)
+static ScreenCell **alloc_buffer(VTermScreen *screen, int rows, int cols)
 {
-  ScreenCell *new_buffer = vterm_allocator_malloc(screen->vt, sizeof(ScreenCell) * rows * cols);
+  ScreenCell **rowptr = vterm_allocator_malloc(screen->vt, sizeof(ScreenCell *) * rows);
+  ScreenCell *cells = vterm_allocator_malloc(screen->vt, sizeof(ScreenCell) * rows * cols);
 
   for(int row = 0; row < rows; row++) {
-    for(int col = 0; col < cols; col++) {
-      clearcell(screen, &new_buffer[row * cols + col]);
-    }
+    rowptr[row] = &cells[row * cols];
+    for(int col = 0; col < cols; col++)
+      clearcell(screen, &rowptr[row][col]);
   }
 
-  return new_buffer;
+  return rowptr;
+}
+
+static void free_buffer(VTermScreen *screen, ScreenCell **rowptr)
+{
+  if(!rowptr)
+    return;
+  /* Row pointers rotate on scroll, so rowptr[0] is not necessarily the
+   * block base. All pointers slice one contiguous block, so the lowest is
+   * the base. */
+  ScreenCell *base = rowptr[0];
+  for(int row = 1; row < screen->rows; row++)
+    if(rowptr[row] < base)
+      base = rowptr[row];
+  vterm_allocator_free(screen->vt, base); /* the contiguous cell block */
+  vterm_allocator_free(screen->vt, rowptr);    /* the row-pointer array */
 }
 
 static void damagerect(VTermScreen *screen, VTermRect rect)
@@ -242,6 +261,28 @@ static int moverect_internal(VTermRect dest, VTermRect src, void *user)
 
   int cols = src.end_col - src.start_col;
   int downward = src.start_row - dest.start_row;
+
+  /* Full-screen vertical scroll: rotate the row pointers instead of
+   * memmove()ing the whole cell block. Handles the common one-line scroll
+   * with a single-pointer rotate; multi-line scrolls fall through to the
+   * memmove loop below. */
+  if(dest.start_col == 0 && dest.end_col == screen->cols &&
+     src.start_col  == 0 && src.end_col  == screen->cols &&
+     ((downward > 0 && dest.start_row == 0 && src.end_row == screen->rows) ||
+      (downward < 0 && src.start_row  == 0 && dest.end_row == screen->rows))) {
+    if(downward == 1) {
+      ScreenCell *top = screen->buffer[0];
+      memmove(screen->buffer, screen->buffer + 1, (size_t)(screen->rows - 1) * sizeof(ScreenCell *));
+      screen->buffer[screen->rows - 1] = top;
+      return 1;
+    }
+    if(downward == -1) {
+      ScreenCell *bot = screen->buffer[screen->rows - 1];
+      memmove(screen->buffer + 1, screen->buffer, (size_t)(screen->rows - 1) * sizeof(ScreenCell *));
+      screen->buffer[0] = bot;
+      return 1;
+    }
+  }
 
   int init_row, test_row, inc_row;
   if(downward < 0) {
@@ -508,10 +549,10 @@ static int bell(void *user)
 
 /* How many cells are non-blank
  * Returns the position of the first blank cell in the trailing blank end */
-static int line_popcount(ScreenCell *buffer, int row, int rows, int cols)
+static int line_popcount(ScreenCell **buffer, int row, int rows, int cols)
 {
   int col = cols - 1;
-  while(col >= 0 && buffer[row * cols + col].chars[0] == 0)
+  while(col >= 0 && buffer[row][col].chars[0] == 0)
     col--;
   return col + 1;
 }
@@ -521,10 +562,10 @@ static void resize_buffer(VTermScreen *screen, int bufidx, int new_rows, int new
   int old_rows = screen->rows;
   int old_cols = screen->cols;
 
-  ScreenCell *old_buffer = screen->buffers[bufidx];
+  ScreenCell **old_buffer = screen->buffers[bufidx];
   VTermLineInfo *old_lineinfo = statefields->lineinfos[bufidx];
 
-  ScreenCell *new_buffer = vterm_allocator_malloc(screen->vt, sizeof(ScreenCell) * new_rows * new_cols);
+  ScreenCell **new_buffer = alloc_buffer(screen, new_rows, new_cols);
   VTermLineInfo *new_lineinfo = vterm_allocator_malloc(screen->vt, sizeof(new_lineinfo[0]) * new_rows);
 
   int old_row = old_rows - 1;
@@ -589,7 +630,7 @@ static void resize_buffer(VTermScreen *screen, int bufidx, int new_rows, int new
       fprintf(stderr, "  scroll %d rows +%d downwards\n", rowcount, downwards);
 #endif
 
-      memmove(&new_buffer[downwards * new_cols], &new_buffer[0],   rowcount * new_cols * sizeof(ScreenCell));
+      memmove(new_buffer[downwards], new_buffer[0], rowcount * new_cols * sizeof(ScreenCell));
       memmove(&new_lineinfo[downwards],          &new_lineinfo[0], rowcount            * sizeof(new_lineinfo[0]));
 
       new_row += downwards;
@@ -625,7 +666,7 @@ static void resize_buffer(VTermScreen *screen, int bufidx, int new_rows, int new
 
       while(count) {
         /* TODO: This could surely be done a lot faster by memcpy()'ing the entire range */
-        new_buffer[new_row * new_cols + new_col] = old_buffer[old_row * old_cols + old_col];
+        new_buffer[new_row][new_col] = old_buffer[old_row][old_col];
 
         if(old_cursor.row == old_row && old_cursor.col == old_col)
           new_cursor.row = new_row, new_cursor.col = new_col;
@@ -652,7 +693,7 @@ static void resize_buffer(VTermScreen *screen, int bufidx, int new_rows, int new
       }
 
       while(new_col < new_cols) {
-        clearcell(screen, &new_buffer[new_row * new_cols + new_col]);
+        clearcell(screen, &new_buffer[new_row][new_col]);
         new_col++;
       }
 
@@ -698,7 +739,7 @@ static void resize_buffer(VTermScreen *screen, int bufidx, int new_rows, int new
       VTermPos pos = { .row = new_row };
       for(pos.col = 0; pos.col < old_cols && pos.col < new_cols; pos.col += screen->sb_buffer[pos.col].width) {
         VTermScreenCell *src = &screen->sb_buffer[pos.col];
-        ScreenCell *dst = &new_buffer[pos.row * new_cols + pos.col];
+        ScreenCell *dst = &new_buffer[pos.row][pos.col];
 
         for(int i = 0; i < VTERM_MAX_CHARS_PER_CELL; i++) {
           dst->chars[i] = src->chars[i];
@@ -724,7 +765,7 @@ static void resize_buffer(VTermScreen *screen, int bufidx, int new_rows, int new
           (dst + 1)->chars[0] = (uint32_t) -1;
       }
       for( ; pos.col < new_cols; pos.col++)
-        clearcell(screen, &new_buffer[pos.row * new_cols + pos.col]);
+        clearcell(screen, &new_buffer[pos.row][pos.col]);
       new_row--;
 
       if(active)
@@ -734,19 +775,19 @@ static void resize_buffer(VTermScreen *screen, int bufidx, int new_rows, int new
   if(new_row >= 0) {
     /* Scroll new rows back up to the top and fill in blanks at the bottom */
     int moverows = new_rows - new_row - 1;
-    memmove(&new_buffer[0], &new_buffer[(new_row + 1) * new_cols], moverows * new_cols * sizeof(ScreenCell));
+    memmove(new_buffer[0], new_buffer[new_row + 1], moverows * new_cols * sizeof(ScreenCell));
     memmove(&new_lineinfo[0], &new_lineinfo[new_row + 1], moverows * sizeof(new_lineinfo[0]));
 
     new_cursor.row -= (new_row + 1);
 
     for(new_row = moverows; new_row < new_rows; new_row++) {
       for(int col = 0; col < new_cols; col++)
-        clearcell(screen, &new_buffer[new_row * new_cols + col]);
+        clearcell(screen, &new_buffer[new_row][col]);
       new_lineinfo[new_row] = (VTermLineInfo){ 0 };
     }
   }
 
-  vterm_allocator_free(screen->vt, old_buffer);
+  free_buffer(screen, old_buffer);
   screen->buffers[bufidx] = new_buffer;
 
   vterm_allocator_free(screen->vt, old_lineinfo);
@@ -908,9 +949,9 @@ static VTermScreen *screen_new(VTerm *vt)
 
 INTERNAL void vterm_screen_free(VTermScreen *screen)
 {
-  vterm_allocator_free(screen->vt, screen->buffers[BUFIDX_PRIMARY]);
+  free_buffer(screen, screen->buffers[BUFIDX_PRIMARY]);
   if(screen->buffers[BUFIDX_ALTSCREEN])
-    vterm_allocator_free(screen->vt, screen->buffers[BUFIDX_ALTSCREEN]);
+    free_buffer(screen, screen->buffers[BUFIDX_ALTSCREEN]);
 
   vterm_allocator_free(screen->vt, screen->sb_buffer);
 
@@ -1180,11 +1221,11 @@ void vterm_screen_convert_color_to_rgb(const VTermScreen *screen, VTermColor *co
   vterm_state_convert_color_to_rgb(screen->state, col);
 }
 
-static void reset_default_colours(VTermScreen *screen, ScreenCell *buffer)
+static void reset_default_colours(VTermScreen *screen, ScreenCell **buffer)
 {
   for(int row = 0; row <= screen->rows - 1; row++)
     for(int col = 0; col <= screen->cols - 1; col++) {
-      ScreenCell *cell = &buffer[row * screen->cols + col];
+      ScreenCell *cell = &buffer[row][col];
       if(VTERM_COLOR_IS_DEFAULT_FG(&cell->pen.fg))
         cell->pen.fg = screen->pen.fg;
       if(VTERM_COLOR_IS_DEFAULT_BG(&cell->pen.bg))

@@ -34,14 +34,26 @@ static uint8_t s_ring[TELNET_BUF];
 static size_t s_ring_head;
 static size_t s_ring_tail;
 static SemaphoreHandle_t s_ring_mutex;
+static SemaphoreHandle_t s_ring_sem; /* signalled when host data is pushed */
 static int s_fd = -1;
 static SemaphoreHandle_t s_fd_mutex;
 
-void vterm_telnet_pop(uint8_t *out, size_t *len, size_t cap)
+void vterm_telnet_pop(uint8_t *out, size_t *len, size_t cap, TickType_t timeout)
 {
 	*len = 0;
-	if (s_ring_mutex == NULL)
+	if (s_ring_mutex == NULL || s_ring_sem == NULL)
 		return;
+
+	/* peek emptiness under the mutex: a producer that pushes between this
+	 * check and the semaphore wait below still wakes us (it gives the
+	 * semaphore after the byte is already in the ring) */
+	xSemaphoreTake(s_ring_mutex, portMAX_DELAY);
+	bool empty = (s_ring_head == s_ring_tail);
+	xSemaphoreGive(s_ring_mutex);
+
+	if (empty && xSemaphoreTake(s_ring_sem, timeout) != pdTRUE)
+		return; /* no host data within the timeout */
+
 	xSemaphoreTake(s_ring_mutex, portMAX_DELAY);
 	while (s_ring_head != s_ring_tail && *len < cap && *len < TELNET_BUF) {
 		out[(*len)++] = s_ring[s_ring_tail];
@@ -54,20 +66,34 @@ static void telnet_push(const uint8_t *data, size_t len)
 {
 	if (s_ring_mutex == NULL)
 		return;
-	for (size_t i = 0; i < len; i++) {
-		for (;;) {
-			xSemaphoreTake(s_ring_mutex, portMAX_DELAY);
-			size_t next = (s_ring_head + 1) % TELNET_BUF;
-			if (next != s_ring_tail) {
-				s_ring[s_ring_head] = data[i];
-				s_ring_head = next;
-				xSemaphoreGive(s_ring_mutex);
-				break;
-			}
+	size_t done = 0;
+	while (done < len) {
+		xSemaphoreTake(s_ring_mutex, portMAX_DELAY);
+		/* free space (reserve 1 slot to distinguish full from empty) */
+		size_t space = (s_ring_tail + TELNET_BUF - s_ring_head - 1) % TELNET_BUF;
+		size_t n = len - done;
+		if (n > space)
+			n = space;
+		size_t first = TELNET_BUF - s_ring_head; /* bytes before the ring end */
+		if (n > first)
+			n = first;
+		if (n > 0) {
+			memcpy(&s_ring[s_ring_head], data + done, n);
+			s_ring_head = (s_ring_head + n) % TELNET_BUF;
+			done += n;
+			xSemaphoreGive(s_ring_mutex);
+			if (s_ring_sem)
+				xSemaphoreGive(s_ring_sem);
+		} else {
 			xSemaphoreGive(s_ring_mutex);
 			/* ring full: wait for the consumer instead of dropping —
 			 * stops recv() and lets TCP backpressure throttle the host */
-			vTaskDelay(pdMS_TO_TICKS(1));
+			static bool s_full_logged;
+			if (!s_full_logged) {
+				s_full_logged = true;
+				ESP_LOGW(TAG, "ring full: backpressure (consumer too slow)");
+			}
+			vTaskDelay(1); /* 1 tick (10ms @ 100Hz) — let the consumer drain */
 		}
 	}
 }
@@ -122,8 +148,13 @@ static void telnet_process(int fd, const uint8_t *data, size_t len)
 	size_t i = 0;
 	while (i < total) {
 		if (src[i] != 0xff) {
-			telnet_push(&src[i], 1);
-			i++;
+			/* batch the run of plain data bytes up to the next IAC into
+			 * one ring push (was per-byte: a mutex per byte) */
+			size_t run = i;
+			while (run < total && src[run] != 0xff)
+				run++;
+			telnet_push(&src[i], run - i);
+			i = run;
 			continue;
 		}
 		/* IAC */
@@ -236,6 +267,7 @@ static void telnet_client_task(void *arg)
 void vterm_telnet_start(void)
 {
 	s_ring_mutex = xSemaphoreCreateMutex();
+	s_ring_sem = xSemaphoreCreateBinary();
 	s_fd_mutex = xSemaphoreCreateMutex();
 	xTaskCreate(telnet_client_task, "telnet-cli", 4096, NULL, 5, NULL);
 	ESP_LOGI(TAG, "telnet client task started (host %s:%d)", TELNET_HOST_IP, TELNET_PORT);

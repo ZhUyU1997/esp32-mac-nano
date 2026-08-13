@@ -47,8 +47,6 @@ typedef struct {
 	 * scrolled-out line). Return 1 on success, 0 if out of range. */
 	int (*sb_get_cell)(void *user, int row, int col, VTermScreenCell *cell);
 	void *sb_user;
-	uint32_t prof_bg_us;   /* term_render_frame: background pass cost */
-	uint32_t prof_glyph_us; /* term_render_frame: glyph pass cost */
 } term_renderer_t;
 
 /* Attach a renderer to a libvterm instance. */

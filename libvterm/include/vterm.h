@@ -21,7 +21,15 @@ extern "C" {
 /* Any cell can contain at most one basic printing character and 5 combining
  * characters. This number could be changed but will be ABI-incompatible if
  * you do */
-#define VTERM_MAX_CHARS_PER_CELL 6
+/*
+ * Downstream change (esp32-mini-mac): 6 -> 1.
+ * The glyph table has zero combining code points (see scripts/count-combining.js),
+ * and combining support costs 20 bytes/cell of PSRAM for chars[1..5] that are
+ * never used. 1 shrinks ScreenCell 36B -> 16B and the 30x80 screen (2 buffers)
+ * from 115KB to 75KB. Trade-off: combining character sequences (e.g. e + U+0301)
+ * are dropped instead of joined.
+ */
+#define VTERM_MAX_CHARS_PER_CELL 1
 
 typedef struct VTerm VTerm;
 typedef struct VTermState VTermState;
