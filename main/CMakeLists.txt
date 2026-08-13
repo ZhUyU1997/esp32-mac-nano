@@ -105,7 +105,6 @@ idf_component_register(SRCS
         "core/macplus/cpu/musashi"
         "../libvterm/include"
         "../libvterm/src"
-        "../tools/vterm"
         "arch/esp32/mach-s3/vterm"
     EMBED_FILES
         "../macintosh/rom.bin"

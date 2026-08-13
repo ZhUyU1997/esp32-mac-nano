@@ -1,14 +1,10 @@
 /*
- * ESP32 vterm adapter — M1 selftest.
+ * ESP32 vterm adapter: VT100 terminal over telnet.
  *
- * Renders a static selftest page (character table + 64-colour bars) from
- * libvterm through term_render, converts RGB888 to the panel's 6-bit
- * (64-colour) data bus, and pushes it to the ST7701 framebuffer.
- *
- * Layout: 480x640 framebuffer, 8x16 cells -> 60 cols x 40 rows.
- * The 8-bit framebuffer holds a 0-63 value in bits 2..7 (the two lowest
- * data lines are not wired: rgb_data0/1 are -1 in the dtree), so the
- * on-bus value is fb_byte >> 2.
+ * libvterm screen -> on-the-fly renderer: each cell is rasterized into a
+ * transposed stack buffer and flushed to the rotated 480x640 ST7701
+ * framebuffer as 16-byte runs, with dirty-rect damage tracking. 80x30
+ * cells of 8x16 pixels, 64-colour RGB222 output.
  */
 #include <string.h>
 #include <stdio.h>
@@ -602,18 +598,15 @@ static void vterm_mouse_event(const input_evt_t *evt)
 
 void vterm_esp32_selftest(framebuffer_t *lcd, mach_s3_blit_worker_t *blit_worker)
 {
-	ESP_LOGI(TAG, "selftest: blit_worker=%p lcd=%p", (void *)blit_worker, (void *)lcd);
-
 	s_lcd = lcd;
 	s_fb = (uint8_t *)framebuffer_get_framebuffer(lcd);
 	s_fb_w = (int)lcd->width;
 	s_fb_h = (int)lcd->height;
 
 	/* allocate once and reuse across mode entries: re-entering the vterm
-	 * mode must not leak/re-malloc the 1.2 MB pixel buffer (PSRAM can
-	 * fragment after the Mac allocates) */
+	 * mode must not leak/re-malloc the pixel buffer (PSRAM can fragment
+	 * after the Mac allocates) */
 	if (!s_pixels) {
-		ESP_LOGI(TAG, "selftest: alloc pixels (%d x %d)", VTERM_COLS, VTERM_ROWS);
 		s_pixels = heap_caps_malloc((size_t)VTERM_ROWS * VTERM_COLS * TERM_CELL_W *
 		                                TERM_CELL_H * sizeof(uint8_t),
 		                            MALLOC_CAP_SPIRAM);
@@ -649,10 +642,8 @@ void vterm_esp32_selftest(framebuffer_t *lcd, mach_s3_blit_worker_t *blit_worker
 		vterm_input_write(s_vt, "\033[20h", 6);
 	}
 	VTermScreen *scr = vterm_obtain_screen(s_vt);
-	ESP_LOGI(TAG, "selftest: vterm init done");
 
-	/* clean screen: no selftest content — the telnet bash output is the
-	 * terminal content (M3) */
+	/* clean screen: the telnet host output is the terminal content */
 	vterm_input_write(s_vt, "\033[2J\033[H", 7);
 	vterm_screen_flush_damage(scr);
 	/* a fresh session starts with an empty scrollback, no selection, and a
@@ -665,11 +656,6 @@ void vterm_esp32_selftest(framebuffer_t *lcd, mach_s3_blit_worker_t *blit_worker
 	s_mouse_x = (VTERM_COLS * TERM_CELL_W) / 2;
 	s_mouse_y = (VTERM_ROWS * TERM_CELL_H) / 2;
 	term_render_frame(&s_renderer);
-	uint32_t bright = 0;
-	for (int i = 0; i < VTERM_ROWS * VTERM_COLS * TERM_CELL_W * TERM_CELL_H; i++)
-		if (s_pixels[i])
-			bright++;
-	ESP_LOGI(TAG, "selftest: rendered, bright px=%lu", (unsigned long)bright);
 
 	/* write after a vsync, exactly like the blit worker would (the
 	 * submit_and_wait round trip misbehaves in this context — returns
@@ -678,11 +664,10 @@ void vterm_esp32_selftest(framebuffer_t *lcd, mach_s3_blit_worker_t *blit_worker
 		ESP_LOGW(TAG, "vsync wait timeout, writing anyway");
 	}
 	vterm_frame_blit(lcd, NULL);
-	ESP_LOGI(TAG, "M1 selftest frame pushed (%d x %d cells)", VTERM_COLS, VTERM_ROWS);
 }
 
-/* ---- interactive loop (M2): input -> VT100 -> render -> blit -----------
- * Runs until F10 is pressed (temporary MODE_UI replacement). */
+/* ---- interactive loop: input -> VT100 -> render -> blit ----------------
+ * Runs until F10/F12 is pressed. */
 
 bool vterm_esp32_enter(framebuffer_t *lcd, mach_s3_blit_worker_t *blit_worker)
 {
@@ -690,10 +675,10 @@ bool vterm_esp32_enter(framebuffer_t *lcd, mach_s3_blit_worker_t *blit_worker)
 	input_evt_t evt;
 	s_blit_worker = blit_worker;
 
-	/* (re)init + selftest page, then interactive */
+	/* (re)init, then interactive */
 	vterm_esp32_selftest(lcd, blit_worker);
 	VTermScreen *scr = vterm_obtain_screen(s_vt);
-	ESP_LOGI(TAG, "vterm mode: type on the USB keyboard, F10 to exit");
+	ESP_LOGI(TAG, "vterm mode: type on the USB keyboard, F10/F12 to exit");
 
 	while (true) {
 		if (input_pop(&evt)) {
@@ -738,7 +723,7 @@ bool vterm_esp32_enter(framebuffer_t *lcd, mach_s3_blit_worker_t *blit_worker)
 						size_t n = vterm_hid_map(evt.u.key.code, seq, sizeof(seq));
 						if (n) {
 							/* connected: forward to host (host drives the display);
-							 * otherwise local echo like M2 */
+							 * otherwise local echo */
 							if (!vterm_telnet_send((uint8_t *)seq, n)) {
 								vterm_input_write(s_vt, seq, n);
 								vterm_screen_flush_damage(scr);

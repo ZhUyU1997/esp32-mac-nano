@@ -86,7 +86,6 @@ static input_keycode_t hid_kbd_to_input(uint8_t hid)
 	case 0x42: return INPUT_KEY_F9;   case 0x43: return INPUT_KEY_F10;
 	case 0x44: return INPUT_KEY_F11;  case 0x45: return INPUT_KEY_F12;
 	case 0x65: return INPUT_KEY_INSERT;
-	case 0x68: return INPUT_KEY_F12;
 	default: return INPUT_KEY_NONE;
 	}
 }
