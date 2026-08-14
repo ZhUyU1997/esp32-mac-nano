@@ -37,3 +37,8 @@ fonts/
 
 # idf-mcp build output (tsc)
 idf-mcp/dist/
+
+# 下载的 ASCII-art 素材（16colo.rs），不入库
+scripts/art/packs/
+scripts/art/*/
+!scripts/art/README.md
