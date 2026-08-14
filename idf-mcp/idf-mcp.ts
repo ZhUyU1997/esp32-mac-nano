@@ -94,6 +94,7 @@ let lastBytes = 0;
 let pending = "";
 let lastCmdName: string | null = null;
 let lastExit: number | null = null;
+let lineSeq = 0;
 
 function capLine(ln: string): string {
   const b = Buffer.from(ln);
@@ -111,6 +112,7 @@ function pushOutput(data: string): void {
     ln = capLine(ln.replace(ANSI_RE, ""));
     lastLines.push(ln);
     lastBytes += Buffer.byteLength(ln);
+    checkLineForWaiters(ln, ++lineSeq);
     while (lastBytes > RING_MAX && lastLines.length > 1) lastBytes -= Buffer.byteLength(lastLines.shift()!);
   }
 }
@@ -121,7 +123,21 @@ function drainPending(): void {
   pending = "";
   lastLines.push(ln);
   lastBytes += Buffer.byteLength(ln);
+  checkLineForWaiters(ln, ++lineSeq);
   while (lastBytes > RING_MAX && lastLines.length > 1) lastBytes -= Buffer.byteLength(lastLines.shift()!);
+}
+
+function checkLineForWaiters(ln: string, seq: number): void {
+  if (matchWaiters.length === 0) return;
+  for (const w of [...matchWaiters]) {
+    if (w.settled || seq <= w.startSeq) continue;
+    w.re.lastIndex = 0;
+    if (w.re.test(ln)) {
+      w.settled = true;
+      w.resolve();
+    }
+  }
+  matchWaiters = matchWaiters.filter((w) => !w.settled);
 }
 
 function clearOutput(): void {
@@ -351,6 +367,14 @@ let child: { cmd: string; kind: Kind; proc: IPty; start: number } | null = null;
 let lastResult: { cmd: string; exit: number | null; end: number } | null = null;
 let exitWaiters: (() => void)[] = [];
 
+interface MatchWaiter {
+  re: RegExp;
+  startSeq: number;
+  resolve: () => void;
+  settled: boolean;
+}
+let matchWaiters: MatchWaiter[] = [];
+
 function startChild(cmd: string, kind: Kind, file: string, args: string[]): void {
   clearOutput();
   const rows = Math.max(1, termRows - HEADER_ROWS);
@@ -362,6 +386,7 @@ function startChild(cmd: string, kind: Kind, file: string, args: string[]): void
     env: { ...baseEnv, TERM: "xterm-256color" },
   });
   child = { cmd, kind, proc, start: Date.now() };
+  lastCmdName = cmd;
   proc.onData((data: string) => {
     if (isTTY) process.stdout.write(data); // raw passthrough into scroll region
     pushOutput(data);
@@ -402,6 +427,45 @@ function waitForExit(timeoutMs: number): Promise<boolean> {
     const timer = setTimeout(() => finish(false), timeoutMs);
     const waiter = (): void => finish(true);
     exitWaiters.push(waiter);
+  });
+}
+
+type WaitOutcome = "matched" | "exited" | "timedOut";
+
+function waitForMatch(pattern: string, timeoutMs: number, includePast = false): Promise<WaitOutcome> {
+  return new Promise((resolve) => {
+    const re = safeRegex(pattern);
+    drainPending();
+    if (includePast) {
+      for (const ln of lastLines) {
+        re.lastIndex = 0;
+        if (re.test(ln)) {
+          resolve("matched");
+          return;
+        }
+      }
+    }
+    if (!child) {
+      resolve("exited");
+      return;
+    }
+    const startSeq = includePast ? -1 : lineSeq;
+    let settled = false;
+    const timer = setTimeout(() => finish("timedOut"), timeoutMs);
+    const waiter: MatchWaiter = { re, startSeq, resolve: () => finish("matched"), settled: false };
+    const onExit = (): void => finish("exited");
+    const finish = (outcome: WaitOutcome): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      const mi = matchWaiters.indexOf(waiter);
+      if (mi >= 0) matchWaiters.splice(mi, 1);
+      const ei = exitWaiters.indexOf(onExit);
+      if (ei >= 0) exitWaiters.splice(ei, 1);
+      resolve(outcome);
+    };
+    matchWaiters.push(waiter);
+    exitWaiters.push(onExit);
   });
 }
 
@@ -627,6 +691,34 @@ async function runBlocking(
   };
 }
 
+async function runAsyncWait(
+  spec: SpawnSpec,
+  pattern: string,
+  timeoutMs: number,
+  tailLines: number = TAIL_LINES,
+): Promise<{ content: { type: "text"; text: string }[] }> {
+  launch(spec);
+  const outcome = await waitForMatch(pattern, timeoutMs);
+  drainPending();
+  const tail = lastLines.slice(-tailLines).join("\n");
+  return {
+    content: [
+      { type: "text", text: tail || "(no output yet)" },
+      {
+        type: "text",
+        text: JSON.stringify({
+          status: outcome,
+          command: lastCmdName,
+          matched: outcome === "matched" ? pattern : null,
+          exit: outcome === "exited" ? lastExit : null,
+          running: child?.cmd ?? null,
+          totalLines: lastLines.length,
+        }),
+      },
+    ],
+  };
+}
+
 // ---------------------------------------------------------------------------
 // MCP server
 // ---------------------------------------------------------------------------
@@ -647,7 +739,12 @@ function createServer(): McpServer {
             "also press buttons (Build/Flash/Flash+Mon/Monitor/Reboot/Stop). Prefer idf_build, " +
             "idf_flash, idf_flash_monitor, idf_monitor for the standard workflow. " +
             "idf_flash_monitor flashes then attaches the monitor with --no-reset so the chip " +
-            "reboots only once. Interrupt with idf_interrupt. Reboot the chip with idf_reboot. " +
+            "reboots only once. To know when flashing is done (instead of sleeping), pass " +
+            'wait: "Hard resetting via RTS pin" (plus a timeoutMs) to idf_flash_monitor / ' +
+            'idf_build_flash_monitor, or call idf_wait_for with a regex (e.g. "app_main") and a ' +
+            'required timeoutMs against the running monitor (includePast: true also counts ' +
+            'already-emitted lines). ' +
+            "Interrupt with idf_interrupt. Reboot the chip with idf_reboot. " +
             "Read output with idf_read_output.",
         },
       ],
@@ -700,11 +797,19 @@ function createServer(): McpServer {
     "idf_monitor",
     {
       port: z.string().regex(/^[A-Za-z0-9_.\-/]+$/, "port must be a serial device path").optional().describe("Serial port, e.g. /dev/ttyUSB0."),
+      wait: z.string().min(1).optional().describe("Regex; block until it appears in output (e.g. app_main to wait for the app to start)."),
+      timeoutMs: z.number().int().min(1000).max(3_600_000).optional().describe("Max wait for `wait` in ms; required when wait is set."),
     },
-    async ({ port }) => {
+    async ({ port, wait, timeoutMs }) => {
       const busy = busyError();
       if (busy) return busy;
       const spec = specMonitor(port);
+      if (wait) {
+        if (timeoutMs == null) {
+          return { content: [{ type: "text", text: "timeoutMs is required when wait is set" }], isError: true };
+        }
+        return runAsyncWait(spec, wait, timeoutMs);
+      }
       launch(spec);
       return { content: [{ type: "text", text: `started: ${spec.cmd}` }] };
     },
@@ -714,11 +819,19 @@ function createServer(): McpServer {
     "idf_flash_monitor",
     {
       port: z.string().regex(/^[A-Za-z0-9_.\-/]+$/, "port must be a serial device path").optional().describe("Serial port, e.g. /dev/ttyUSB0."),
+      wait: z.string().min(1).optional().describe('Regex; block until it appears (default: return immediately). Flash done = "Hard resetting via RTS pin"; monitor attached = "Executing action: monitor"; app started = "app_main".'),
+      timeoutMs: z.number().int().min(1000).max(3_600_000).optional().describe("Max wait for `wait` in ms; required when wait is set."),
     },
-    async ({ port }) => {
+    async ({ port, wait, timeoutMs }) => {
       const busy = busyError();
       if (busy) return busy;
       const spec = specFlashMonitor(port);
+      if (wait) {
+        if (timeoutMs == null) {
+          return { content: [{ type: "text", text: "timeoutMs is required when wait is set" }], isError: true };
+        }
+        return runAsyncWait(spec, wait, timeoutMs);
+      }
       launch(spec);
       return { content: [{ type: "text", text: `started: ${spec.cmd}` }] };
     },
@@ -727,12 +840,20 @@ function createServer(): McpServer {
   mcp.tool(
     "idf_build_flash_monitor",
     {
-      port: z.string().regex(/^[A-Za-z0-9_.\-]+$/, "port must be a serial device path").optional().describe("Serial port, e.g. /dev/ttyUSB0."),
+      port: z.string().regex(/^[A-Za-z0-9_.\-/]+$/, "port must be a serial device path").optional().describe("Serial port, e.g. /dev/ttyUSB0."),
+      wait: z.string().min(1).optional().describe('Regex; block until it appears (default: return immediately). Flash done = "Hard resetting via RTS pin"; monitor attached = "Executing action: monitor"; app started = "app_main".'),
+      timeoutMs: z.number().int().min(1000).max(3_600_000).optional().describe("Max wait for `wait` in ms; required when wait is set."),
     },
-    async ({ port }) => {
+    async ({ port, wait, timeoutMs }) => {
       const busy = busyError();
       if (busy) return busy;
       const spec = specBuildFlashMonitor(port);
+      if (wait) {
+        if (timeoutMs == null) {
+          return { content: [{ type: "text", text: "timeoutMs is required when wait is set" }], isError: true };
+        }
+        return runAsyncWait(spec, wait, timeoutMs);
+      }
       launch(spec);
       return { content: [{ type: "text", text: `started: ${spec.cmd}` }] };
     },
@@ -845,6 +966,28 @@ function createServer(): McpServer {
       ],
     };
   });
+
+  mcp.tool(
+    "idf_wait_for",
+    {
+      pattern: z.string().min(1).describe("Regex to wait for in the current command's output."),
+      timeoutMs: z.number().int().min(1000).max(3_600_000).describe("Max wait in ms (required)."),
+      includePast: z.boolean().optional().describe("Also match lines already in the buffer before this call (default false = forward-only)."),
+    },
+    async ({ pattern, timeoutMs, includePast }) => {
+      const outcome = await waitForMatch(pattern, timeoutMs, includePast);
+      if (outcome === "matched") {
+        const re = safeRegex(pattern);
+        let line: string | null = null;
+        for (const ln of lastLines) {
+          re.lastIndex = 0;
+          if (re.test(ln)) line = ln;
+        }
+        return { content: [{ type: "text", text: line ?? "(no output)" }] };
+      }
+      return { content: [{ type: "text", text: outcome }] };
+    },
+  );
 
   return mcp;
 }

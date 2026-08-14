@@ -55,8 +55,9 @@ MCP server 监听 `http://127.0.0.1:8765/mcp`。
 | `idf_execute(command, timeoutMs?, tail?)` | **阻塞**任意命令（`bash -c`），超时返回 `{status:"running"}`，命令继续跑 |
 | `idf_build(extra?, timeoutMs?, tail?)` | **阻塞** `idf.py build` |
 | `idf_flash(port?, timeoutMs?, tail?)` | **阻塞** `idf.py flash` |
-| `idf_flash_monitor(port?)` | **异步** `idf.py flash monitor --no-reset`（烧录+看日志，单复位）|
-| `idf_monitor(port?)` | **异步** `idf.py monitor`（启动即复位）|
+| `idf_flash_monitor(port?, wait?, timeoutMs?)` | **异步** `idf.py flash monitor --no-reset`（烧录+看日志，单复位）。给 `wait` 正则则阻塞直到命中（如 `Hard resetting via RTS pin`，此时 `timeoutMs` 必填）|
+| `idf_monitor(port?, wait?, timeoutMs?)` | **异步** `idf.py monitor`（启动即复位）；给 `wait` 则阻塞到命中（`timeoutMs` 必填）|
+| `idf_wait_for(pattern, timeoutMs, includePast?)` | 对当前命令**阻塞等待**日志，命中只返回匹配行（否则 `timedOut`/`exited`）；默认 forward-only，`includePast: true` 也匹配历史；`timeoutMs` 必填 |
 | `idf_reboot(port?)` | monitor 运行中→`Ctrl-T Ctrl-R`；空闲→开 monitor（启动复位）|
 | `idf_interrupt()` | 终止当前命令（monitor→`Ctrl-]`，其它→`Ctrl-C`）|
 | `idf_read_output(tail?, offset?, filter?, level?, clear?)` | 读当前命令输出（分页/过滤/级别）|
@@ -64,6 +65,25 @@ MCP server 监听 `http://127.0.0.1:8765/mcp`。
 | `idf_status()` | 运行状态 / 项目目录 / mock 标志 |
 
 资源 `idf://instructions`：给 agent 的任务说明。
+
+## 等待特定日志（不靠 sleep）
+
+`idf_flash_monitor` / `idf_monitor` 默认异步返回，agent 无法知道烧录/启动进度。两种方式确定性等待：
+
+1. **`wait` 参数**：`idf_flash_monitor({ wait: "Hard resetting via RTS pin", timeoutMs: 60000 })` —— 启动后阻塞，直到该正则命中才返回（`status: matched`），monitor 继续后台跑。
+2. **`idf_wait_for`**：对已在跑的命令等日志，命中只返回匹配的那一行。默认 forward-only（只匹配调用之后的行）；加 `includePast: true` 则也匹配调用前已出现的行。如 `idf_wait_for({ pattern: "app_main", timeoutMs: 30000 })` 等固件跑起来，或 `idf_wait_for({ pattern: "Hard resetting via RTS pin", includePast: true, timeoutMs: 5000 })` 确认烧录是否已完成。
+
+**`timeoutMs` 一律必填，无默认值**——避免正则写错时静默长挂。
+
+三种结果 `matched`（命中）、`exited`（命令退出/无命令）、`timedOut`（超时）。
+
+常用标记（idf.py 5.5.4 稳定输出）：
+
+| 标记 | 含义 |
+|---|---|
+| `Hard resetting via RTS pin` | 烧录完成、芯片复位 |
+| `Executing action: monitor` | 进入 monitor（串口接管）|
+| `app_main` | 固件已启动跑日志 |
 
 ## Mock 模式（测试，不碰真实硬件）
 

@@ -24,6 +24,8 @@ for (const s of [
   "Hash of data verified.",
   "Leaving...",
   "Hard resetting via RTS pin...",
+  "Executing action: monitor",
+  "Running idf_monitor in directory /home/yzhu/esp32-mini-mac (mock)",
   "Done - flash OK (mock)",
 ]) {
   console.log(s);

@@ -43,12 +43,18 @@ await sleep(600);
 let st = JSON.parse(await call("idf_status"));
 console.log("[monitor interrupted] running:", st.running, "| exit:", st.lastCmd?.exit);
 
-// --- flash_monitor: async (flash + monitor in one, mock) ---
-const fm = await call("idf_flash_monitor");
-console.log("[flash_monitor] started:", typeof fm === "string" && fm.includes("started"));
-await sleep(2500);
-out = await call("idf_read_output", { tail: true });
-console.log("[flash_monitor] has flash OK:", out.text.includes("flash OK (mock)"), "| has log:", out.text.includes("mock log line"));
+// --- flash_monitor: async by default; wait= blocks until flash done ---
+const fm = await call("idf_flash_monitor", { wait: "Hard resetting via RTS pin", timeoutMs: 15000 });
+console.log("[flash_monitor wait] status:", fm.meta.status, "| matched:", fm.meta.matched);
+// wait for the firmware to start printing (returns just the matched line)
+const wf = await call("idf_wait_for", { pattern: "mock log line", timeoutMs: 5000 });
+console.log("[wait_for] matched line:", wf);
+// forward-only: a pattern that only appeared in history must NOT match again
+const fw = await call("idf_wait_for", { pattern: "Hard resetting via RTS pin", timeoutMs: 1500 });
+console.log("[wait_for forward-only] status:", fw, "(expect timedOut)");
+// includePast: the same historical pattern MUST match
+const hp = await call("idf_wait_for", { pattern: "Hard resetting via RTS pin", includePast: true, timeoutMs: 2000 });
+console.log("[wait_for includePast] line:", hp);
 await call("idf_interrupt");
 await sleep(600);
 st = JSON.parse(await call("idf_status"));
@@ -70,6 +76,12 @@ await call("idf_interrupt");
 await sleep(600);
 st = JSON.parse(await call("idf_status"));
 console.log("[after idle reboot] running:", st.running, "| lastCmd:", st.lastCmd?.cmd);
+
+// --- wait without timeoutMs must be rejected (no launch) ---
+const noT = await call("idf_flash_monitor", { wait: "Hard resetting via RTS pin" });
+console.log("[wait no timeout] rejected:", typeof noT === "string" && noT.includes("timeoutMs is required"));
+st = JSON.parse(await call("idf_status"));
+console.log("[wait no timeout] still idle:", st.running === null);
 
 await client.close();
 console.log("TEST DONE");
