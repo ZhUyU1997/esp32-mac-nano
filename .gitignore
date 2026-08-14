@@ -34,3 +34,6 @@ web/dist/
 
 # 10MB font source (contains personal metadata), ignored — never commit
 fonts/
+
+# idf-mcp build output (tsc)
+idf-mcp/dist/

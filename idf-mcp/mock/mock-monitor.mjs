@@ -1,7 +1,7 @@
 // Mock ESP-IDF serial monitor: prints fake device logs forever.
-// Mirrors `idf.py monitor` key handling: the exit key is Ctrl-] (0x1d),
-// which esp-idf-monitor reads from the terminal in raw mode. Ctrl-C (SIGINT)
-// is also honored for direct kills.
+// Key handling mirrors esp-idf-monitor:
+//   Ctrl-]  (0x1d)      -> exit
+//   Ctrl-T Ctrl-R (0x14 0x12) -> reset the chip (menu + reset)
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 console.log("--- idf.py monitor (MOCK) ---");
@@ -23,11 +23,15 @@ const stop = () => {
   process.exit(0);
 };
 
-// Raw-mode stdin: read the exit key Ctrl-] (0x1d) like esp-idf-monitor does.
+// Raw-mode stdin, like esp-idf-monitor reads from the terminal.
 process.stdin.setRawMode?.(true);
 process.stdin.resume();
+let tail = "";
 process.stdin.on("data", (d) => {
-  if (d.includes("\x1d")) stop();
+  const s = tail + d.toString();
+  tail = d.toString().slice(-2);
+  if (s.includes("\x1d")) stop();
+  if (s.includes("\x14\x12")) console.log("--- chip reset (mock) ---");
 });
 process.on("SIGINT", stop);
 

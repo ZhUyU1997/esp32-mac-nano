@@ -1,103 +1,78 @@
 # idf-mcp
 
-ESP-IDF 项目控制台，由 MCP agent 完全驱动、人类只读观看。
-
-agent 通过 MCP 执行 `idf.py` 命令（flash / monitor / build / 任意命令）并随时中断；
-pty 输出实时流到你的终端——你可以看到 agent 的一切操作。**你不需要输入**，
-但保留 Ctrl-C 紧急刹车：有命令在跑时转发中断，空闲时退出程序。
+ESP-IDF 项目控制台：一个**按键驱动的 TUI** + 一个 **MCP server**，人和 agent 共用同一个
+「当前命令」槽位。
 
 ```
-agent ──MCP──► idf-mcp ──pty──► bash（IDF 项目目录）
-                     │
-                     └──► 你的终端（只读实时显示 + 紧急刹车）
+┌──────────────────────────────────────────────────────────────┐
+│ [idf-mcp] esp32-mini-mac  ● idle                            │ ← 状态栏（持久）
+├──────────────────────────────────────────────────────────────┤
+│ [Build] [Flash] [Flash+Mon] [Monitor] [Reboot] [Stop] [Clear] [Quit] │ ← 按钮栏
+├──────────────────────────────────────────────────────────────┤
+│  I (30)  boot: ESP-IDF v5.5.4 ...                            │ ← 输出区（占满剩余屏幕）
+│  I (120) app_main: Mac Plus starting...                      │    build/flash/串口日志
+│  ...                                                         │    实时流到这里
+└──────────────────────────────────────────────────────────────┘
 ```
+
+- 顶部两行固定：状态栏（idle / ▶ 命令 秒数 / ✓·✗ 命令 exit N）+ 按钮栏。
+- 下方全部空间是输出区：颜色、`\r` 进度条、滚动都保留，build/flash/monitor 输出实时显示。
+- **无持久 bash**：每条命令是独立的 pty 子进程（退出码精确，无需完成哨兵）。
+- IDF 环境在启动时一次性捕获（`source activate; env -0`）。
 
 ## 用法
 
-项目根目录一键启动（自动探测并激活 IDF 环境）：
-
 ```bash
-cd /home/yzhu/esp32-mini-mac && pnpm idf-mcp
+cd /home/yzhu/esp32-mini-mac && pnpm idf-mcp     # 或 cd idf-mcp && pnpm start
 ```
 
-或直接运行：
+`--activate <script>` 指定 IDF 激活脚本，`--activate ""` 禁用探测（默认探测
+`~/.espressif/tools/activate_idf_v5.5.4.sh`）。
 
-```bash
-cd idf-mcp && pnpm start
-```
+MCP server 监听 `http://127.0.0.1:8765/mcp`。
 
-**IDF 环境激活**：程序通过 bash `--rcfile` 在 shell 初始化时自动
-`source` 激活脚本，无需手动 source。默认探测
-`~/.espressif/tools/activate_idf_v5.5.4.sh`；也可显式指定：
+## 按钮
 
-```bash
-node idf-mcp.ts --activate /path/to/activate.sh   # 指定脚本
-node idf-mcp.ts --activate ""                     # 禁用探测
-```
+| 按钮 | 动作 | 子进程 |
+|---|---|---|
+| **Build** | 编译 | `idf.py build`（阻塞）|
+| **Flash** | 烧录 | `idf.py flash`（阻塞）|
+| **Flash+Mon** | 烧录后直接看串口，**只复位一次** | `idf.py flash monitor --no-reset`（异步）|
+| **Monitor** | 看串口日志（启动即复位芯片）| `idf.py monitor`（异步）|
+| **Reboot** | 重启芯片 | monitor 运行中→发 `Ctrl-T Ctrl-R`；空闲→开 monitor |
+| **Stop** | 停止当前命令 | monitor→`Ctrl-]`；其它→`Ctrl-C`(SIGINT) |
+| **Clear** | 清空输出区 | — |
+| **Quit** | 退出程序 | 先杀掉运行中的子进程 |
 
-不带参数则不激活（沿用继承的环境）。
-
-启动后 MCP server 监听 `http://127.0.0.1:8765/mcp`。
+交互：**鼠标 hover 高亮 + 左键点击**，或键盘 `←/→` 移动 + `Enter` 触发。
+**输出区拖拽选中、`y` 复制**（OSC52，终端支持则直接进剪贴板；否则回退 clip.exe/xclip/pbcopy）。
+禁用按钮置灰不可触发。`Ctrl-C` = Stop（有命令运行时）/ 退出（空闲时）。
 
 ## MCP 工具
 
 | 工具 | 说明 |
 |---|---|
-| `idf_execute(command, timeoutMs?, tail)` | **阻塞**执行任意命令，完成后返回 `{status, exit, totalLines}` + tail 输出（`tail` 必填，1-100 行）；超时（`timeoutMs`，默认 600s）返回 `{status:"running"}`，命令继续跑 |
-| `idf_build(extra?, timeoutMs?, tail?)` | **阻塞** `idf.py build`，语义同上 |
-| `idf_flash(port?, timeoutMs?, tail?)` | **阻塞** `idf.py flash`，语义同上 |
-| `idf_monitor(port?)` | **异步**（日志流永不结束）：立即返回 started，agent 读实时日志、`idf_interrupt` 停止 |
-| `idf_interrupt()` | 终止前台命令：monitor 发退出键 Ctrl-]（esp-idf-monitor 在 raw mode 下把 Ctrl-C 转发给芯片、不退出），其它命令发 Ctrl-C（SIGINT） |
-| `idf_read_output(tail?, offset?, filter?, level?, clear?)` | 只读**上一次执行命令**的输出（新命令开始即清空，天然不混读；monitor 运行中读实时日志）；固定每页 100 行，offset 翻页；filter 正则 / level 级别过滤；返回 `{text, totalLines, nextOffset, hasMore}` |
-| `idf_log_stats()` | 日志统计：总行数、字节数、I/W/E 级别计数 |
-| `idf_status()` | 项目目录 / 运行状态（running/lastCmd）/ mock 标志 |
+| `idf_execute(command, timeoutMs?, tail?)` | **阻塞**任意命令（`bash -c`），超时返回 `{status:"running"}`，命令继续跑 |
+| `idf_build(extra?, timeoutMs?, tail?)` | **阻塞** `idf.py build` |
+| `idf_flash(port?, timeoutMs?, tail?)` | **阻塞** `idf.py flash` |
+| `idf_flash_monitor(port?)` | **异步** `idf.py flash monitor --no-reset`（烧录+看日志，单复位）|
+| `idf_monitor(port?)` | **异步** `idf.py monitor`（启动即复位）|
+| `idf_reboot(port?)` | monitor 运行中→`Ctrl-T Ctrl-R`；空闲→开 monitor（启动复位）|
+| `idf_interrupt()` | 终止当前命令（monitor→`Ctrl-]`，其它→`Ctrl-C`）|
+| `idf_read_output(tail?, offset?, filter?, level?, clear?)` | 读当前命令输出（分页/过滤/级别）|
+| `idf_log_stats()` | 日志统计（I/W/E 计数）|
+| `idf_status()` | 运行状态 / 项目目录 / mock 标志 |
 
-**资源**：`idf://instructions` —— 给 agent 的任务说明（谁来驱动、用什么工具）。
+资源 `idf://instructions`：给 agent 的任务说明。
 
-**命令完成检测**：bash 的 `PROMPT_COMMAND` 在每次回提示符时输出 OSC 标题哨兵
-`MCP_CMD_END:<exit>`（屏幕不可见），`idf_status` 据此自动从 running 回到 idle，
-即使命令被 Ctrl-C 中断（交互 bash 会放弃命令行，故不用分号拼接）。
-
-**动态提示符**：rcfile 的 `PROMPT_COMMAND` 读 node 写的状态文件（`/tmp/idf-mcp-state-<pid>`），
-空闲时显示 `[idf-mcp] ~/dir [idle]`（绿色），agent 正在跑命令时显示
-`[idf-mcp] ~/dir ▶ <cmd>`（黄色）——无尾随 `$`，终端是 watch-only。
-提示符只在命令结束后渲染（bash 行为），运行中的 ▶ 同时反映在标题栏。
-
-## 用户侧行为
-
-- **只读**：终端关 echo，stdin 不转发，你无法输入
-- **紧急刹车**：Ctrl-C → 命令运行中则转发中断（等价 agent `idf_interrupt`）；
-  空闲则退出程序
-- **标题栏**：命令运行时显示 `▶ <cmd>`，结束恢复
-
-## Mock 模式（测试，不碰真实硬件/idf.py）
+## Mock 模式（测试，不碰真实硬件）
 
 ```bash
-MCP_IDF_MOCK=1 node idf-mcp.ts
+MCP_IDF_MOCK=1 node idf-mcp.ts   # 或 pnpm start:mock
 ```
 
-`idf_flash` → `mock/mock-flash.mjs`（假 esptool 进度），
-`idf_monitor` → `mock/mock-monitor.mjs`（假串口日志，SIGINT 退出）。
-工具流程与真实一致，可安全验证 execute/interrupt/状态机。
-
-```bash
-node client-test.mjs   # 冒烟测试：flash → monitor → interrupt → execute → interrupt
-```
-
-## 配置 AI agent
-
-**Claude Code**（`.mcp.json`）：
-
-```json
-{
-  "mcpServers": {
-    "idf-mcp": {
-      "type": "http",
-      "url": "http://127.0.0.1:8765/mcp"
-    }
-  }
-}
-```
+`flash`/`monitor`/`flash_monitor` 走 mock 脚本；`idf_build` 仍是真 `idf.py build`（未 mock）。
+`node client-test.mjs` 冒烟测试：flash → monitor → reboot → interrupt → flash_monitor → execute 超时 → reboot 空闲。
 
 ## 环境变量
 
@@ -105,20 +80,24 @@ node client-test.mjs   # 冒烟测试：flash → monitor → interrupt → exec
 |---|---|---|
 | `MCP_IDF_PORT` | `8765` | MCP HTTP 端口 |
 | `MCP_IDF_HOST` | `127.0.0.1` | 监听地址 |
-| `MCP_IDF_BUFFER` | `16777216` | ring buffer 字节上限（默认 16 MiB） |
+| `MCP_IDF_BUFFER` | `16777216` | ring buffer 字节上限 |
 | `MCP_IDF_PROJECT` | cwd | 项目目录 |
-| `MCP_IDF_MOCK` | — | `1` 启用 mock 模式 |
+| `MCP_IDF_SERIAL_PORT` | — | 串口路径（不设则 idf.py 自动探测）|
+| `MCP_IDF_MOCK` | — | `1` 启用 mock |
 
 ## 实现说明
 
-- `node-pty`：bash 跑在独立 pty（自有进程组），输出直显 + ring buffer
-- 用户 Ctrl-C 到不了 bash 的进程组 → node 收到后转发中断进 pty（monitor 用退出键 Ctrl-]，其余命令 Ctrl-C，与 agent `idf_interrupt` 同路径）
-- `@modelcontextprotocol/sdk` Streamable HTTP，每客户端连接一个独立 `McpServer` 实例
+- **单子进程槽位**：同一时刻只有一个子进程；人按按钮和 agent 调 MCP 工具打到同一个状态机，
+  忙时拒绝新命令（`a command is already running`）。
+- **无持久 bash**：命令直接 `pty.spawn`（`idf.py` / `bash -c`），`exit` 事件给精确退出码；
+  被信号打断的按 `128+signal` 计（Ctrl-C = 130）。
+- **输出双路**：子进程输出（a）解析成显示行喂给 React log（`\r` 进度条原地覆盖、
+  ESP-IDF I/W/E 级别着色），（b）剥 ANSI 后进 ring buffer 供 MCP 读取。
+- **TUI 框架**：[Dye](https://github.com/andrewjsauer/dye)（Ink 的现代 fork）：内置鼠标 hover/click、
+  文本选中 + OSC52 剪贴板、React 组件；终端复原由框架处理。
 
-## 安全与健壮性
+## 安全
 
-- **并发限制**：有命令运行时，新的 execute/build/flash/monitor 注入会被拒绝（需先 `idf_interrupt`）——单个 pty 无法区分多命令的完成哨兵
-- **参数校验**：`idf_flash`/`idf_monitor` 的 `port` 只允许串口路径字符，`idf_build` 的 `extra` 只允许 flag 字符——拒绝 shell 元字符注入
-- **完成哨兵**：匹配完整 OSC 序列 `\x1b]0;MCP_CMD_END:<exit>\x07`，命令输出里的普通文本 `MCP_CMD_END` 不会误判；跨 onData 分块也安全
-- **行截断**：单行超 4096 字节截断并标记 `…[truncated]`，防超长行撑爆响应
-- 仅监听 `127.0.0.1`（`MCP_IDF_HOST` 可改）；无认证，本机进程可调用，勿暴露到公网
+- 仅监听 `127.0.0.1`（`MCP_IDF_HOST` 可改）；无认证，勿暴露公网。
+- `port` 只允许串口路径字符，`idf_build` 的 `extra` 只允许 flag 字符，拒绝 shell 元字符注入。
+- 单行超 4096 字节截断并标记 `…[truncated]`。
