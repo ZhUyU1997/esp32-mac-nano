@@ -236,6 +236,37 @@ static void test_cp437_box_mapping(void)
 	CHECK_EQ("U+2500 maps to CP437 0xC4", cell_char(&t.r, 0, 0), 0xC4, "cell(0,0) char");
 	CHECK_EQ("U+2502 maps to CP437 0xB3", cell_char(&t.r, 0, 1), 0xB3, "cell(0,1) char");
 	CHECK_EQ("U+2510 maps to CP437 0xBF", cell_char(&t.r, 0, 2), 0xBF, "cell(0,2) char");
+
+	/* cross-checked against the Unicode Consortium CP437 table: ┴/╦/╩ and
+	 * the ▒/▓ shades were misassigned (swapped slots) in the map */
+	tctx_feed(&t, "\xe2\x94\xb4\xe2\x95\xa6\xe2\x95\xa9\xe2\x96\x92\xe2\x96\x93"); /* ┴ ╦ ╩ ▒ ▓ */
+	vterm_input_write(t.vt, "\033[1;1H", 6);
+	vterm_screen_flush_damage(t.r.screen);
+	term_render_frame(&t.r);
+	CHECK_EQ("U+2534 ┴ maps to CP437 0xC1", cell_char(&t.r, 0, 0), 0xC1, "cell(0,0) char");
+	CHECK_EQ("U+2566 ╦ maps to CP437 0xCB", cell_char(&t.r, 0, 1), 0xCB, "cell(0,1) char");
+	CHECK_EQ("U+2569 ╩ maps to CP437 0xCA", cell_char(&t.r, 0, 2), 0xCA, "cell(0,2) char");
+	CHECK_EQ("U+2592 ▒ maps to CP437 0xB1", cell_char(&t.r, 0, 3), 0xB1, "cell(0,3) char");
+	CHECK_EQ("U+2593 ▓ maps to CP437 0xB2", cell_char(&t.r, 0, 4), 0xB2, "cell(0,4) char");
+
+	/* the rest of CP437: Latin-1 accented + Greek + ß/ƒ/₧ (were hollow
+	 * placeholders because the VGA font has them but the map did not) */
+	tctx_feed(&t, "\xc3\xa9\xcf\x80\xce\xa9\xc3\x9f\xc6\x92");  /* é π Ω ß ƒ */
+	vterm_input_write(t.vt, "\033[1;1H", 6);
+	vterm_screen_flush_damage(t.r.screen);
+	term_render_frame(&t.r);
+	CHECK_EQ("U+00E9 maps to CP437 0x82", cell_char(&t.r, 0, 0), 0x82, "cell(0,0) char");
+	CHECK_EQ("U+03C0 maps to CP437 0xE3", cell_char(&t.r, 0, 1), 0xE3, "cell(0,1) char");
+	CHECK_EQ("U+03A9 maps to CP437 0xEA", cell_char(&t.r, 0, 2), 0xEA, "cell(0,2) char");
+	CHECK_EQ("U+00DF maps to CP437 0xE1", cell_char(&t.r, 0, 3), 0xE1, "cell(0,3) char");
+	CHECK_EQ("U+0192 maps to CP437 0x9F", cell_char(&t.r, 0, 4), 0x9F, "cell(0,4) char");
+	/* U+00FF ÿ: was rendered as the CP437 0xFF glyph by the cp==0xFF
+	 * special case; now maps to the real ÿ glyph at 0x98 */
+	vterm_input_write(t.vt, "\033[1;6H", 6); /* move to (0,5) first */
+	tctx_feed(&t, "\xc3\xbf");
+	vterm_screen_flush_damage(t.r.screen);
+	term_render_frame(&t.r);
+	CHECK_EQ("U+00FF maps to CP437 0x98", cell_char(&t.r, 0, 5), 0x98, "cell(0,5) char");
 	tctx_free(&t);
 }
 
@@ -433,6 +464,49 @@ static void test_cursor_moves(void)
 	tctx_feed(&t, "\033[12d");             /* VPA */
 	cur_pos(&t, &r, &c);
 	CHECK_EQ("VPA 12 -> row 11", r, 11, "row");
+	tctx_free(&t);
+}
+
+/* ANSI.SYS save/restore cursor (ESC[s / ESC[u) — the positioning core of
+ * classic ANSI art. libvterm used to misroute ESC[s to DECSLRM (which
+ * resets the cursor to the home corner) and ignore ESC[u, garbling every
+ * piece that relies on save/restore. */
+static void test_ansi_save_restore_cursor(void)
+{
+	tctx_t t;
+	tctx_new(&t, 30, 80);
+	int r, c;
+
+	tctx_feed(&t, "\033[10;20H");          /* CUP to (9,19) */
+	tctx_feed(&t, "\033[s");               /* save cursor */
+	tctx_feed(&t, "\033[5;5H");            /* move away */
+	cur_pos(&t, &r, &c);
+	CHECK_EQ("ESC[s: cursor still moves after save", r * 100 + c, 4 * 100 + 4, "pos");
+	tctx_feed(&t, "\033[u");               /* restore cursor */
+	cur_pos(&t, &r, &c);
+	CHECK_EQ("ESC[u: cursor restored to saved pos", r * 100 + c, 9 * 100 + 19, "pos");
+
+	/* the latest save wins (single saved slot, ANSI.SYS behaviour) */
+	tctx_feed(&t, "\033[s");               /* save (9,19) */
+	tctx_feed(&t, "\033[20;30H");          /* move */
+	tctx_feed(&t, "\033[s");               /* save (19,29) */
+	tctx_feed(&t, "\033[3;3H");            /* move */
+	tctx_feed(&t, "\033[u");               /* restore -> (19,29) */
+	cur_pos(&t, &r, &c);
+	CHECK_EQ("ESC[u: latest save wins", r * 100 + c, 19 * 100 + 29, "pos");
+
+	/* CSI ? s is XTSAVE (save private modes), NOT DECSLRM: it must not
+	 * reset the cursor to the home corner */
+	tctx_feed(&t, "\033[10;10H");
+	tctx_feed(&t, "\033[?s");
+	cur_pos(&t, &r, &c);
+	CHECK_EQ("ESC[?s: not DECSLRM, cursor stays", r * 100 + c, 9 * 100 + 9, "pos");
+
+	/* the parameterised CSI Pl;Pr s IS DECSLRM (margins reset cursor) */
+	tctx_feed(&t, "\033[20;20H");
+	tctx_feed(&t, "\033[1;40s");
+	cur_pos(&t, &r, &c);
+	CHECK_EQ("ESC[1;40s: DECSLRM resets cursor home", r * 100 + c, 0 * 100 + 0, "pos");
 	tctx_free(&t);
 }
 
@@ -1713,6 +1787,7 @@ int main(void)
 	test_query_responses();
 	test_xterm_corpus();
 	test_cursor_moves();
+	test_ansi_save_restore_cursor();
 	test_erase();
 	test_insert_delete();
 	test_scroll_margins();
