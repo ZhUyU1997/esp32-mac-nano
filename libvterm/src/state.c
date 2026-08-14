@@ -1509,33 +1509,46 @@ static int on_csi(const char *leader, const long args[], int argcount, const cha
 
     break;
 
-  case 0x73: // DECSLRM - DEC custom
-    // Always allow setting these margins, just they won't take effect without DECVSSM
-    state->scrollregion_left = CSI_ARG_OR(args[0], 1) - 1;
-    state->scrollregion_right = argcount < 2 || CSI_ARG_IS_MISSING(args[1]) ? -1 : CSI_ARG(args[1]);
-    LBOUND(state->scrollregion_left, 0);
-    UBOUND(state->scrollregion_left, state->cols);
-    LBOUND(state->scrollregion_right, -1);
-    if(state->scrollregion_left == 0 && state->scrollregion_right == state->cols)
-      state->scrollregion_right = -1;
-    else
-      UBOUND(state->scrollregion_right, state->cols);
+  case 0x73: // CSI s — ANSI.SYS/xterm save cursor (SCOSC); the
+             // parameterised CSI Pl;Pr s is DECSLRM (VT420). Upstream
+             // libvterm routed plain ESC[s to DECSLRM, whose handler
+             // resets the cursor to the home corner — garbling every
+             // ANSI art piece that saves/restores the cursor.
+    if(!CSI_ARG_IS_MISSING(args[0])) {
+      // DECSLRM (VT420) - DEC custom
+      // Always allow setting these margins, just they won't take effect without DECVSSM
+      state->scrollregion_left = CSI_ARG_OR(args[0], 1) - 1;
+      state->scrollregion_right = argcount < 2 || CSI_ARG_IS_MISSING(args[1]) ? -1 : CSI_ARG(args[1]);
+      LBOUND(state->scrollregion_left, 0);
+      UBOUND(state->scrollregion_left, state->cols);
+      LBOUND(state->scrollregion_right, -1);
+      if(state->scrollregion_left == 0 && state->scrollregion_right == state->cols)
+        state->scrollregion_right = -1;
+      else
+        UBOUND(state->scrollregion_right, state->cols);
 
-    if(state->scrollregion_right > -1 &&
-       state->scrollregion_right <= state->scrollregion_left) {
-      // Invalid
-      state->scrollregion_left  = 0;
-      state->scrollregion_right = -1;
+      if(state->scrollregion_right > -1 &&
+         state->scrollregion_right <= state->scrollregion_left) {
+        // Invalid
+        state->scrollregion_left  = 0;
+        state->scrollregion_right = -1;
+      }
+
+      // Setting the scrolling region restores the cursor to the home position
+      state->pos.row = 0;
+      state->pos.col = 0;
+      if(state->mode.origin) {
+        state->pos.row += state->scrollregion_top;
+        state->pos.col += SCROLLREGION_LEFT(state);
+      }
     }
-
-    // Setting the scrolling region restores the cursor to the home position
-    state->pos.row = 0;
-    state->pos.col = 0;
-    if(state->mode.origin) {
-      state->pos.row += state->scrollregion_top;
-      state->pos.col += SCROLLREGION_LEFT(state);
+    else {
+      savecursor(state, 1); // ANSI.SYS save cursor (ESC[s)
     }
+    break;
 
+  case 0x75: // CSI u — ANSI.SYS/xterm restore cursor (SCORC)
+    savecursor(state, 0);
     break;
 
   case INTERMED('\'', 0x7D): // DECIC
