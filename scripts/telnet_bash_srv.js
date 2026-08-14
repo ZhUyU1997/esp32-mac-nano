@@ -6,6 +6,8 @@
  *   node telnet_bash_srv.js [port] --test [pattern]   fixed-output benchmark
  *   node telnet_bash_srv.js [port] --art <dir|file>   ASCII-art gallery
  *   node telnet_bash_srv.js [port] --file <file>      single-file test mode
+ *        (gallery options: --baud <rate> 90s dial-up pacing,
+ *         --auto <sec> autoplay — advance after N s once streamed)
  *        (repeatable: merge several packs)
  *
  * Benchmark patterns (deterministic, for vterm render/blit profiling):
@@ -46,6 +48,8 @@ let testPattern = 'fill';
 let replayFile = null;
 let artDirs = [];
 let testFile = null;
+let baudRate = 0;   /* 90s dial-up simulation: bytes/sec cap for art/file */
+let autoSec = 0;    /* art autoplay: advance to the next piece after N s */
 for (let i = 0; i < args.length; i++) {
 	if (args[i] === '--test') {
 		testMode = true;
@@ -57,6 +61,10 @@ for (let i = 0; i < args.length; i++) {
 		artDirs.push(args[++i]);
 	} else if (args[i] === '--file') {
 		testFile = args[++i];
+	} else if (args[i] === '--baud') {
+		baudRate = parseInt(args[++i], 10) || 0;
+	} else if (args[i] === '--auto') {
+		autoSec = parseFloat(args[++i]) || 0;
 	} else if (/^\d+$/.test(args[i])) {
 		port = parseInt(args[i], 10);
 	}
@@ -412,22 +420,29 @@ function readZip(buf) {
  * loaded into memory at once). */
 function collectUnits(sources) {
 	const units = [];
-	const addZip = (p, display) => units.push({ kind: 'zip', name: display, path: p });
-	const scanDir = (dir) => {
+	/* pack dirs are scripts/art/packs/<year>/<pack>.zip: pull the year out
+	 * of the first path segment for the show log */
+	const addZip = (p, display) => {
+		const m = display.match(/^(\d{4})\//);
+		units.push({ kind: 'zip', name: display, path: p, year: m ? m[1] : null });
+	};
+	const scanDir = (dir, root) => {
 		for (const f of fs.readdirSync(dir).sort()) {
 			const p = path.join(dir, f);
 			if (fs.statSync(p).isDirectory()) {
-				scanDir(p);
+				scanDir(p, root);
 			} else if (/\.(ans|ice|utf8|txt)$/i.test(f)) {
 				units.push({ kind: 'file', name: f, path: p });
 			} else if (/\.zip$/i.test(f)) {
-				addZip(p, path.relative(dir, p));
+				/* display relative to the root --art dir so nested packs
+				 * keep their <year>/ prefix */
+				addZip(p, path.relative(root, p));
 			}
 		}
 	};
 	for (const src of sources) {
 		if (fs.statSync(src).isDirectory()) {
-			scanDir(src);
+			scanDir(src, src);
 		} else if (/\.zip$/i.test(src)) {
 			addZip(src, path.basename(src));
 		} else {
@@ -449,6 +464,31 @@ function isUtf8(buf) {
 	} catch (e) {
 		return false;
 	}
+}
+
+/* Pace a buffer out at 90s dial-up speed: --baud caps the byte rate
+ * (8N1 serial = 10 bits per byte, so 9600 baud ≈ 960 B/s). baud <= 0
+ * sends instantly; onDone fires when the whole buffer has been written.
+ * Returns the interval handle (clear it to abort). */
+function writePaced(sock, buf, baud, onDone) {
+	if (baud <= 0) {
+		sock.write(buf);
+		if (onDone) onDone();
+		return null;
+	}
+	const bytesPerSec = Math.floor(baud / 10);
+	const chunk = Math.max(1, Math.floor(bytesPerSec / 20)); /* 50 ticks/s */
+	let off = 0;
+	const timer = setInterval(() => {
+		const n = Math.min(chunk, buf.length - off);
+		sock.write(buf.subarray(off, off + n));
+		off += n;
+		if (off >= buf.length) {
+			clearInterval(timer);
+			if (onDone) onDone();
+		}
+	}, 50);
+	return timer;
 }
 
 function convertPiece(name, buf) {
@@ -600,9 +640,14 @@ const server = net.createServer((sock) => {
 			return;
 		}
 		console.log('client connected (file test: ' + filePiece.name + ' ' + filePiece.w + 'x' + filePiece.rows + ')');
+		let streamTimer = null;
 		const send = () => {
+			if (streamTimer) {
+				clearInterval(streamTimer);
+				streamTimer = null;
+			}
 			sock.write('\x1b[2J\x1b[H');
-			sock.write(filePiece.buf);
+			streamTimer = writePaced(sock, filePiece.buf, baudRate);
 		};
 		send();
 		/* Enter re-sends the (possibly edited) file */
@@ -674,6 +719,8 @@ const server = net.createServer((sock) => {
 			}
 			return false;
 		};
+		let streamTimer = null; /* paced-send interval (--baud), aborted on switch */
+		let autoTimer = null;  /* autoplay countdown (--auto) */
 		const show = () => {
 			if (!seekPiece()) {
 				console.log('art: no displayable pieces');
@@ -683,9 +730,24 @@ const server = net.createServer((sock) => {
 			const pieces = unitPieces(unit);
 			const p = pieces[Math.min(pi, pieces.length - 1)];
 			console.log('art: show [' + (pi + 1) + '/' + pieces.length + '] ' + p.name +
-			            ' (' + p.w + 'x' + p.rows + ')' + (unit.kind === 'zip' ? ' @' + unit.name : ''));
+			            ' (' + p.w + 'x' + p.rows + ')' +
+			            (unit.year ? ' [' + unit.year + ']' : '') +
+			            (unit.kind === 'zip' ? ' @' + unit.name : ''));
+			if (streamTimer) {
+				clearInterval(streamTimer);
+				streamTimer = null;
+			}
+			if (autoTimer) {
+				clearTimeout(autoTimer);
+				autoTimer = null;
+			}
 			sock.write('\x1b[2J\x1b[H');
-			sock.write(p.buf);
+			streamTimer = writePaced(sock, p.buf, baudRate, () => {
+				streamTimer = null;
+				/* autoplay starts counting once the piece has fully streamed */
+				if (autoSec > 0)
+					autoTimer = setTimeout(next, autoSec * 1000);
+			});
 		};
 		const next = () => {
 			pi++;
@@ -734,5 +796,9 @@ server.listen(port, '0.0.0.0', () => {
 		what = ' (file: ' + filePiece.name + ')';
 	else if (artMode)
 		what = ' (art gallery: ' + artUnits.length + ' units)';
+	if (autoSec > 0)
+		what += ' (autoplay ' + autoSec + 's)';
+	if (baudRate > 0)
+		what += ' (baud ' + baudRate + ')';
 	console.log('listening on :' + port + what);
 });

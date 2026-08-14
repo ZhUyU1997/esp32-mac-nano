@@ -14,6 +14,16 @@ node scripts/telnet_bash_srv.js --art scripts/art/packs
 #    --art 可重复（合并多个 pack）：--art dirA --art file.zip
 #    支持：目录（递归扫描 .zip/.ans/.ice/.txt）、单个 .zip、单个文件
 
+# 2b. 90 年代拨号模拟：--baud 限制发送速度，作品像当年调制解调器一样逐行刷出
+#     （8N1 串口 10bit/字节：2400≈240B/s, 9600≈960B/s, 14400≈1440B/s）
+node scripts/telnet_bash_srv.js --baud 2400 --art scripts/art/packs
+#    --baud 对 --file 同样生效；回车可中断当前流切下一张
+
+# 2c. 自动播放：每张显示完等待 N 秒自动切下一张（与 --baud 组合时，
+#     节流流式完成之后才开始计时；回车仍可手动切换/中断）
+node scripts/telnet_bash_srv.js --auto 8 --art scripts/art/packs
+node scripts/telnet_bash_srv.js --auto 3 --baud 9600 --art scripts/art/packs
+
 # 3. 单文件测试模式：连接发送一个文件，回车重发（改文件后按回车即可重看）
 node scripts/telnet_bash_srv.js --file scripts/cp437-test.txt
 
