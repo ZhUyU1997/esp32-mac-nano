@@ -20,6 +20,9 @@ make mac-all       # build all Mac 68k apps (Retro68)
 make mac-clean     # clean Mac app build
 ```
 
+**vterm / telnet 服务器** — 画廊、单文件测试、基准、回放及素材工具见
+[`docs/telnet-server.md`](docs/telnet-server.md)。
+
 ## Terminal Emulator (host, XT-era)
 
 An XT-era style terminal emulator runs on the host (x64) as a separate
