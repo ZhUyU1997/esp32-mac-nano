@@ -25,11 +25,11 @@ ESP32-S3 固件，多平台 Macintosh Plus 模拟器。详见 [PROJECT.md](PROJE
 |------|-----|------|
 | 1. Plan | agent | 改什么，预期结果 |
 | 2. Checkpoint | agent | 怎么验证（build、test、串口输出、截图）|
-| 3. Execute | agent（自闭环）或 **用户**（需硬件）| 执行验证 |
+| 3. Execute | agent（自闭环，含烧录/串口）或 **用户**（屏幕/声音）| 执行验证 |
 | 4. Judge | agent | 结果与预期是否一致 |
 
-- **自闭环**：build、lint、单元测试 — 有机读 pass/fail 的事。
-- **非自闭环**：烧录、串口监控、屏幕/声音 — 需要物理硬件的事。
+- **自闭环**：build、lint、单元测试、烧录、串口日志 — 有机读 pass/fail 的事（烧录/串口经 idf-mcp MCP 驱动并读回日志判定）。
+- **非自闭环**：屏幕显示、声音 — 需要人眼/人耳做物理验证的事。
 - **step 3 不能自闭环 → 等用户【执行】验证。别造假。**"Build 过了"不等于"设备验证过了"。
 
 ## Stop on rejection — 用户拒绝就停
@@ -51,21 +51,19 @@ ESP32-S3 固件，多平台 Macintosh Plus 模拟器。详见 [PROJECT.md](PROJE
 - 超出当前授权范围的操作 → 停止，等用户【指令】。
 - 不确定属于哪类 → 按最保守的授权执行。
 
-## Verification — 验证
-
-代码改动必须验证后才能提交。Build + run tests。需硬件验证的（烧录、串口、屏幕），等用户【执行】验证。
-
 ## "提交暂存区" = commit，不是 stage
 
 用户说"提交暂存区代码"意思是 `git commit`，不是 `git add`。
 
+**提交需用户明确授权**：非隐式推断，授权一次性并仅限当前代码。
+
 **流程：**
 1. `git diff --cached --stat` — 确认暂存区内容
-2. `git diff --cached` — 确认具体变更
-3. 如有问题（corruption、artifact、错误内容）→ 停止，等用户【确认】
-4. 如无问题 → 按 [Commit style](#commit-style) 生成 commit message，执行 `git commit`
+2. `git diff --cached` — 逐文件确认变更内容；忽略生成物及大文件（dist、bundle 等）
+3. 如有问题 → 停止，等用户【确认是否修复】
+4. 如有修改 → 停止，等用户【确认是否继续提交】
+5. 如无异常 → 按 [Commit style](#commit-style) 生成 commit message，执行 `git commit`
 
-**绝不**在发现问题时偷偷修了再提交。
 
 ## Commit style — 提交规范
 
