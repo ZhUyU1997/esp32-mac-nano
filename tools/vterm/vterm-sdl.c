@@ -172,6 +172,10 @@ static int on_settermprop(VTermProp prop, VTermValue *val, void *user)
 		/* fullscreen apps (vim/htop) own the whole screen: scrollback is
 		 * not reachable while the alt screen is active (as neovim does) */
 		if (val->boolean && s_renderer.scroll_offset > 0) {
+			if (s_renderer.sel_active || s_sel_dragging) {
+				s_renderer.sel_anchor.row -= s_renderer.scroll_offset;
+				s_renderer.sel_cur.row -= s_renderer.scroll_offset;
+			}
 			s_renderer.scroll_offset = 0;
 			s_dirty = true;
 		}
@@ -280,6 +284,12 @@ static void term_output_cb(const char *s, size_t len, void *user)
 static void reset_scrollback(void)
 {
 	if (s_renderer.scroll_offset > 0) {
+		/* the selection is anchored to the content, so it follows the
+		 * view back to the live screen */
+		if (s_renderer.sel_active || s_sel_dragging) {
+			s_renderer.sel_anchor.row -= s_renderer.scroll_offset;
+			s_renderer.sel_cur.row -= s_renderer.scroll_offset;
+		}
 		s_renderer.scroll_offset = 0;
 		s_dirty = true;
 	}
@@ -680,11 +690,16 @@ int main(int argc, char **argv)
 					vterm_mouse_move(s_vt, ev.motion.y / CELL_H, ev.motion.x / CELL_W, VTERM_MOD_NONE);
 					s_dirty = true;
 				} else if (s_sel_dragging) {
-					/* the selection activates on the first drag motion */
-					s_renderer.sel_active = true;
-					s_renderer.sel_cur.row = ev.motion.y / CELL_H;
-					s_renderer.sel_cur.col = ev.motion.x / CELL_W;
-					s_dirty = true;
+					/* the selection activates on the first drag motion; only
+					 * re-render when the cell actually changed */
+					int r = ev.motion.y / CELL_H;
+					int c = ev.motion.x / CELL_W;
+					if (r != s_renderer.sel_cur.row || c != s_renderer.sel_cur.col) {
+						s_renderer.sel_active = true;
+						s_renderer.sel_cur.row = r;
+						s_renderer.sel_cur.col = c;
+						s_dirty = true;
+					}
 				}
 				break;
 			case SDL_MOUSEBUTTONDOWN:
@@ -770,6 +785,7 @@ int main(int argc, char **argv)
 					resize_terminal(ev.window.data1, ev.window.data2);
 				break;
 			case SDL_MOUSEWHEEL:
+				int old_offset = s_renderer.scroll_offset;
 				if (s_mouse_mode) {
 					/* mouse protocol active (vim set mouse=a): wheel becomes
 					 * buttons 4/5, not scrollback scrolling */
@@ -790,6 +806,15 @@ int main(int argc, char **argv)
 					s_renderer.scroll_offset = 0;
 				if (s_renderer.scroll_offset > s_sb_count)
 					s_renderer.scroll_offset = s_sb_count;
+				if (!s_mouse_mode && (s_renderer.sel_active || s_sel_dragging)) {
+					/* the selection is anchored to the content: translate it
+					 * by the actual offset delta so the highlight follows */
+					int delta = s_renderer.scroll_offset - old_offset;
+					if (delta != 0) {
+						s_renderer.sel_anchor.row += delta;
+						s_renderer.sel_cur.row += delta;
+					}
+				}
 				s_dirty = true;
 				break;
 			case SDL_TEXTINPUT:

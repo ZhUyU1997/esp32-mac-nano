@@ -48,9 +48,12 @@ static int s_mouse_mode;         /* VTERM_PROP_MOUSE value (0 = off) */
 static bool s_sel_dragging;      /* left button held for text selection */
 
 /* mouse pointer save/restore (the fb is rendered on the fly, so a moving
- * pointer must be restored from a saved 16x16 patch instead of re-blitting
- * the whole frame from s_pixels) */
-static uint8_t s_ptr_save[16][16];
+ * pointer must be restored from a saved patch instead of re-blitting the
+ * whole frame from s_pixels). The sprite is 16x16 plus a 1px black
+ * outline, so the patch is 18x18. */
+#define SPRITE_PAD 1
+#define SPRITE_SZ (16 + 2 * SPRITE_PAD) /* 18 */
+static uint8_t s_ptr_save[SPRITE_SZ][SPRITE_SZ];
 static bool s_ptr_saved;
 static int s_ptr_x, s_ptr_y;
 
@@ -249,39 +252,52 @@ static const VTermScreenCallbacks s_callbacks = {
 };
 
 /* ---- mouse pointer sprite (16x16 A1 arrow, same as the lvgl pause UI) ---
- * White fill plus a black shadow (the black sprite is offset +1,+1). */
+ * White fill plus a 1px black outline all around (classic cursor, so the
+ * pointer stays visible on a white background too). */
 
 static const uint8_t k_cursor_a1_data[] = {
         0xC0, 0x00, 0xE0, 0x00, 0xF0, 0x00, 0xF8, 0x00, 0xFC, 0x00, 0xFE, 0x00, 0xFF, 0x00, 0xFF, 0x80,
         0xFF, 0xC0, 0xFF, 0xE0, 0xFE, 0x00, 0xEF, 0x00, 0xCF, 0x00, 0x87, 0x80, 0x07, 0x80, 0x03, 0x80,
 };
-static const uint8_t k_cursor_a1_data_black[] = {
-        0x00, 0x00, 0x40, 0x00, 0x60, 0x00, 0x70, 0x00, 0x78, 0x00, 0x7C, 0x00, 0x7E, 0x00, 0x7F, 0x00,
-        0x7F, 0x80, 0x7C, 0x00, 0x6C, 0x00, 0x46, 0x00, 0x06, 0x00, 0x03, 0x00, 0x03, 0x00, 0x00, 0x00,
-};
+
+static bool vterm_arrow_px(int x, int y)
+{
+	if (x < 0 || x >= 16 || y < 0 || y >= 16)
+		return false;
+	uint8_t b = k_cursor_a1_data[y * 2 + (x < 8 ? 0 : 1)];
+	return ((b >> (7 - (x & 7))) & 1) != 0;
+}
 
 /* Overlay the pointer directly in the rotated framebuffer: terminal
  * (px,py) -> fb (dst_x=py, dst_y=H-1-px). Panel byte = 6-bit colour << 2,
- * so white = 63<<2 and black = 0. */
+ * so white = 63<<2 and black = 0. Classic cursor: white arrow fill with a
+ * black 8-connected outline — the old shadow bitmap (arrow shifted +1,+1)
+ * was hidden entirely behind the white arrow, leaving it pure white and
+ * invisible on a white background. */
 static void vterm_draw_cursor(framebuffer_t *lcd, int cx, int cy)
 {
 	uint8_t *fb = (uint8_t *)framebuffer_get_framebuffer(lcd);
 	const int H = (int)lcd->height;
-	for (int y = 0; y < 16; y++) {
-		int dst_x = cy + y;
+	const int px0 = cx - SPRITE_PAD;
+	const int py0 = cy - SPRITE_PAD;
+	for (int y = 0; y < SPRITE_SZ; y++) {
+		int dst_x = py0 + y;
 		if (dst_x < 0 || dst_x >= (int)lcd->width)
 			continue;
-		uint8_t wlo = k_cursor_a1_data[y * 2], whi = k_cursor_a1_data[y * 2 + 1];
-		uint8_t blo = k_cursor_a1_data_black[y * 2], bhi = k_cursor_a1_data_black[y * 2 + 1];
-		for (int x = 0; x < 16; x++) {
-			int dst_y = H - 1 - (cx + x);
+		for (int x = 0; x < SPRITE_SZ; x++) {
+			int dst_y = H - 1 - (px0 + x);
 			if (dst_y < 0 || dst_y >= H)
 				continue;
-			uint8_t wb = (x < 8) ? wlo : whi;
-			uint8_t bb = (x < 8) ? blo : bhi;
-			if ((wb >> (7 - (x & 7))) & 1)
+			const int ax = x - SPRITE_PAD;
+			const int ay = y - SPRITE_PAD;
+			bool outline = false;
+			for (int dy = -1; dy <= 1 && !outline; dy++)
+				for (int dx = -1; dx <= 1; dx++)
+					if ((dx || dy) && vterm_arrow_px(ax + dx, ay + dy))
+						outline = true;
+			if (vterm_arrow_px(ax, ay))
 				fb[(size_t)dst_y * lcd->width + dst_x] = (uint8_t)(63 << 2);
-			else if ((bb >> (7 - (x & 7))) & 1)
+			else if (outline)
 				fb[(size_t)dst_y * lcd->width + dst_x] = 0;
 		}
 	}
@@ -294,12 +310,12 @@ static void vterm_ptr_restore(framebuffer_t *lcd)
 		return;
 	uint8_t *fb = (uint8_t *)framebuffer_get_framebuffer(lcd);
 	const int H = (int)lcd->height;
-	for (int y = 0; y < 16; y++) {
-		int dst_x = s_ptr_y + y;
+	for (int y = 0; y < SPRITE_SZ; y++) {
+		int dst_x = s_ptr_y - SPRITE_PAD + y;
 		if (dst_x < 0 || dst_x >= (int)lcd->width)
 			continue;
-		for (int x = 0; x < 16; x++) {
-			int dst_y = H - 1 - (s_ptr_x + x);
+		for (int x = 0; x < SPRITE_SZ; x++) {
+			int dst_y = H - 1 - (s_ptr_x - SPRITE_PAD + x);
 			if (dst_y < 0 || dst_y >= H)
 				continue;
 			fb[(size_t)dst_y * lcd->width + dst_x] = s_ptr_save[y][x];
@@ -313,10 +329,10 @@ static void vterm_ptr_save_and_draw(framebuffer_t *lcd, int cx, int cy)
 {
 	uint8_t *fb = (uint8_t *)framebuffer_get_framebuffer(lcd);
 	const int H = (int)lcd->height;
-	for (int y = 0; y < 16; y++) {
-		int dst_x = cy + y;
-		for (int x = 0; x < 16; x++) {
-			int dst_y = H - 1 - (cx + x);
+	for (int y = 0; y < SPRITE_SZ; y++) {
+		int dst_x = cy - SPRITE_PAD + y;
+		for (int x = 0; x < SPRITE_SZ; x++) {
+			int dst_y = H - 1 - (cx - SPRITE_PAD + x);
 			if (dst_x < 0 || dst_x >= (int)lcd->width || dst_y < 0 || dst_y >= H) {
 				s_ptr_save[y][x] = 0;
 				continue;
@@ -373,8 +389,14 @@ static void vterm_frame_blit(framebuffer_t *lcd, void *user_ctx)
 			}
 		}
 	}
-	/* mouse pointer on top */
-	vterm_draw_cursor(lcd, s_mouse_x, s_mouse_y);
+}
+
+/* Blit job (runs on the blit worker after vsync): frame + pointer overlay. */
+static void vterm_blit_job(framebuffer_t *lcd, void *user_ctx)
+{
+	(void)user_ctx;
+	vterm_frame_blit(lcd, NULL);
+	vterm_ptr_save_and_draw(lcd, s_mouse_x, s_mouse_y);
 }
 
 /* ---- render helper ------------------------------------------------------ */
@@ -383,39 +405,102 @@ static void vterm_render_if_needed(void)
 {
 	if (s_dirty && !s_sync_update) {
 		s_dirty = false;
+		/* a pending pointer move means the sprite is still drawn at its old
+		 * position (s_ptr_*) while s_mouse_* already point at the new one.
+		 * Erase it before rendering, or the render leaves a ghost of the
+		 * old sprite behind (htop: every mouse move repaints a region that
+		 * usually does not cover the old pointer position). */
+		bool ptr_moved = s_cursor_dirty;
 		s_cursor_dirty = false;
 		s_renderer.fb_out = s_fb;
 		s_renderer.fb_w = s_fb_w;
 		s_renderer.fb_h = s_fb_h;
+
+		int r0, r1, c0, c1;
 		if (s_dmg_full || !s_dmg_has) {
-			s_renderer.dirty_r0 = 0;
-			s_renderer.dirty_r1 = -1; /* full frame */
+			r0 = 0;
+			r1 = VTERM_ROWS - 1;
+			c0 = 0;
+			c1 = VTERM_COLS - 1;
 		} else {
-			s_renderer.dirty_r0 = s_dmg_r0;
-			s_renderer.dirty_r1 = s_dmg_r1;
-			s_renderer.dirty_c0 = s_dmg_c0;
-			s_renderer.dirty_c1 = s_dmg_c1;
+			r0 = s_dmg_r0;
+			r1 = s_dmg_r1;
+			c0 = s_dmg_c0;
+			c1 = s_dmg_c1;
 		}
 		s_dmg_full = false;
 		s_dmg_has = false;
-		vterm_ptr_restore(s_lcd); /* remove pointer: a partial render may
-		                           * not repaint its region */
-		int r0 = s_renderer.dirty_r0;
-		int r1 = s_renderer.dirty_r1 < 0 ? VTERM_ROWS : s_renderer.dirty_r1;
-		bool fb_ok = term_render_frame_fb(&s_renderer);
-		if (!fb_ok) {
-			/* wide-glyph spill: fall back to s_pixels + full blit */
-			s_renderer.fb_out = NULL;
-			term_render_frame(&s_renderer);
+
+		/* The pointer sprite (18x18 px with its 1px outline) lives in the fb,
+		 * so any render touching its cells erases it. Paint those cells LAST
+		 * and redraw the pointer right after — the old restore-before-render
+		 * left it erased for the whole pass, which visibly blinks it out
+		 * during full-frame scroll renders (~45 ms). Note the sprite is NOT
+		 * cell-aligned: it can span two cell rows/columns, so the footprint
+		 * is rows [pr0..pr1] x cols [pc0..pc1]. */
+		int pr0 = (s_mouse_y - 1) / TERM_CELL_H;
+		int pr1 = (s_mouse_y + 16) / TERM_CELL_H;
+		if (pr1 > VTERM_ROWS - 1)
+			pr1 = VTERM_ROWS - 1;
+		int pc0 = (s_mouse_x - 1) / TERM_CELL_W;
+		int pc1 = (s_mouse_x + 16) / TERM_CELL_W;
+		if (pc1 > VTERM_COLS - 1)
+			pc1 = VTERM_COLS - 1;
+		bool ptr_hit = r0 <= pr1 && r1 >= pr0 && c0 <= pc1 && c1 >= pc0;
+
+		if (ptr_moved) {
+			vterm_ptr_restore(s_lcd);
+			/* draw at the new position at once so the pointer never
+			 * vanishes mid-render; if the render repaints these cells the
+			 * pointer-row pass below re-establishes it with new content */
+			vterm_ptr_save_and_draw(s_lcd, s_mouse_x, s_mouse_y);
+		}
+
+		bool fb_ok = true;
+		if (ptr_hit) {
+			/* rows above the pointer: sprite untouched */
+			if (r0 <= pr0 - 1) {
+				s_renderer.dirty_r0 = r0;
+				s_renderer.dirty_r1 = pr0 - 1;
+				s_renderer.dirty_c0 = c0;
+				s_renderer.dirty_c1 = c1;
+				fb_ok = term_render_frame_fb(&s_renderer);
+			}
+			/* the pointer's rows: erase the sprite and redraw immediately.
+			 * One extra cell left of the sprite is repainted too, so a
+			 * wide glyph whose gap cell the sprite sits on still gets its
+			 * anchor flushed (2-cell width) and the sprite fully erased. */
+			if (fb_ok && pr0 <= r1) {
+				s_renderer.dirty_r0 = pr0;
+				s_renderer.dirty_r1 = pr1;
+				s_renderer.dirty_c0 = c0 < pc0 - 1 ? c0 : pc0 - 1;
+				s_renderer.dirty_c1 = c1 > pc1 ? c1 : pc1;
+				if (s_renderer.dirty_c0 < 0)
+					s_renderer.dirty_c0 = 0;
+				fb_ok = term_render_frame_fb(&s_renderer);
+				if (fb_ok)
+					vterm_ptr_save_and_draw(s_lcd, s_mouse_x, s_mouse_y);
+			}
+			/* rows below the pointer: sprite untouched again */
+			if (fb_ok && pr1 + 1 <= r1) {
+				s_renderer.dirty_r0 = pr1 + 1;
+				s_renderer.dirty_r1 = r1;
+				s_renderer.dirty_c0 = c0;
+				s_renderer.dirty_c1 = c1;
+				fb_ok = term_render_frame_fb(&s_renderer);
+			}
+		} else {
+			s_renderer.dirty_r0 = r0;
+			s_renderer.dirty_r1 = r1;
+			s_renderer.dirty_c0 = c0;
+			s_renderer.dirty_c1 = c1;
+			fb_ok = term_render_frame_fb(&s_renderer);
 		}
 		s_renderer.fb_out = NULL;
-		if (fb_ok) {
-			/* frame in fb: overlay the pointer (the pre-render restore
-			 * already cleared the old patch) */
-			vterm_ptr_save_and_draw(s_lcd, s_mouse_x, s_mouse_y);
-		} else {
-			s_ptr_saved = false;
-			mach_s3_blit_worker_submit_async(s_blit_worker, vterm_frame_blit, NULL);
+		if (!fb_ok) {
+			/* wide-glyph spill: fall back to s_pixels + full blit */
+			term_render_frame(&s_renderer);
+			mach_s3_blit_worker_submit_async(s_blit_worker, vterm_blit_job, NULL);
 		}
 	} else if (s_cursor_dirty) {
 		/* mouse moved: restore + redraw the pointer, no re-render */
@@ -426,6 +511,17 @@ static void vterm_render_if_needed(void)
 }
 
 /* ---- mouse -------------------------------------------------------------- */
+
+/* Keep the selection glued to the content when the view scrolls: rows
+ * move by the scroll delta (visible-row coordinates), so translate both
+ * endpoints by it. Rows scrolled out of the viewport just stop matching. */
+static void vterm_sel_scroll(int delta)
+{
+	if (delta == 0 || (!s_renderer.sel_active && !s_sel_dragging))
+		return;
+	s_renderer.sel_anchor.row += delta;
+	s_renderer.sel_cur.row += delta;
+}
 
 static int vterm_mouse_btn(input_mouse_button_t b)
 {
@@ -461,18 +557,46 @@ static void vterm_mouse_event(const input_evt_t *evt)
 	if (s_mouse_y > VTERM_ROWS * TERM_CELL_H - 1) s_mouse_y = VTERM_ROWS * TERM_CELL_H - 1;
 	col = s_mouse_x / TERM_CELL_W;
 	row = s_mouse_y / TERM_CELL_H;
+	/* the cell under the pointer is a visible row; the mouse-protocol
+	 * reports are in live-screen rows (scrollback peek) */
+	int live_row = row - s_renderer.scroll_offset;
+	if (live_row < 0)
+		live_row = 0;
 
 	switch (evt->kind) {
 	case INPUT_EVT_MOUSE_MOVE_REL:
 	case INPUT_EVT_MOUSE_MOVE_ABS:
 		if (s_mouse_mode)
-			vterm_mouse_move(s_vt, row, col, VTERM_MOD_NONE);
-		else if (s_sel_dragging) {
+			vterm_mouse_move(s_vt, live_row, col, VTERM_MOD_NONE);
+		else if (s_sel_dragging && (row != s_renderer.sel_cur.row ||
+		                           col != s_renderer.sel_cur.col)) {
+			/* incremental drag: only the cells whose highlight changed are
+			 * re-rendered (dirty rect, ~1 ms), not the whole frame (~45 ms).
+			 * The boundary columns follow the xterm.js geometry: the top
+			 * row is anchored at the press point and the bottom row at the
+			 * mouse, so when the cur row changes only the rows between the
+			 * old and new positions need a full repaint, and on the same
+			 * row only the column band moved. */
+			int old_r = s_renderer.sel_cur.row;
+			int old_c = s_renderer.sel_cur.col;
+			int c_lo = old_c < col ? old_c : col;
+			int c_hi = old_c > col ? old_c : col;
 			s_renderer.sel_active = true;
 			s_renderer.sel_cur.row = row;
 			s_renderer.sel_cur.col = col;
-			s_dirty = true; /* selection highlight changes */
-			dmg_mark_full();
+			s_dirty = true;
+			if (old_r != row) {
+				/* rows that entered/left the span, full width: the old and
+				 * new cur row both flip boundary status */
+				int lo = old_r < row ? old_r : row;
+				int hi = old_r > row ? old_r : row;
+				dmg_add(lo, hi, 0, VTERM_COLS - 1);
+			} else {
+				/* same row: only the cur boundary row's column extent
+				 * moved (the other end is anchored at the press point and
+				 * never changes during a drag) */
+				dmg_add(row, row, c_lo, c_hi);
+			}
 		}
 		s_cursor_dirty = true; /* pointer moved */
 		break;
@@ -483,14 +607,21 @@ static void vterm_mouse_event(const input_evt_t *evt)
 			if (b)
 				vterm_mouse_button(s_vt, b, true, VTERM_MOD_NONE);
 		} else if (evt->u.mouse_button.button == INPUT_MOUSE_BTN_LEFT) {
+			if (s_renderer.sel_active) {
+				/* clear the old highlight: repaint its span */
+				int r0 = s_renderer.sel_anchor.row < s_renderer.sel_cur.row ?
+				         s_renderer.sel_anchor.row : s_renderer.sel_cur.row;
+				int r1 = s_renderer.sel_anchor.row > s_renderer.sel_cur.row ?
+				         s_renderer.sel_anchor.row : s_renderer.sel_cur.row;
+				dmg_add(r0, r1, 0, VTERM_COLS - 1);
+				s_dirty = true;
+			}
 			s_renderer.sel_active = false;
 			s_renderer.sel_anchor.row = row;
 			s_renderer.sel_anchor.col = col;
 			s_renderer.sel_cur = s_renderer.sel_anchor;
 			s_sel_dragging = true;
 		}
-		s_dirty = true;
-		dmg_mark_full();
 		break;
 	}
 
@@ -502,8 +633,7 @@ static void vterm_mouse_event(const input_evt_t *evt)
 		} else if (evt->u.mouse_button.button == INPUT_MOUSE_BTN_LEFT && s_sel_dragging) {
 			s_sel_dragging = false;
 		}
-		s_dirty = true;
-		dmg_mark_full();
+		/* nothing changes on screen at release: no render needed */
 		break;
 	}
 
@@ -515,11 +645,14 @@ static void vterm_mouse_event(const input_evt_t *evt)
 			vterm_mouse_button(s_vt, b, true, VTERM_MOD_NONE);
 			vterm_mouse_button(s_vt, b, false, VTERM_MOD_NONE);
 		} else {
+			int old = s_renderer.scroll_offset;
 			s_renderer.scroll_offset += steps;
 			if (s_renderer.scroll_offset < 0)
 				s_renderer.scroll_offset = 0;
 			if (s_renderer.scroll_offset > s_sb_count)
 				s_renderer.scroll_offset = s_sb_count;
+			/* content moved by the delta: the selection follows it */
+			vterm_sel_scroll(s_renderer.scroll_offset - old);
 		}
 		s_dirty = true;
 		dmg_mark_full();
@@ -602,6 +735,10 @@ void vterm_esp32_selftest(framebuffer_t *lcd, mach_s3_blit_worker_t *blit_worker
 		ESP_LOGW(TAG, "vsync wait timeout, writing anyway");
 	}
 	vterm_frame_blit(lcd, NULL);
+	/* the frame blit no longer draws the pointer: capture the patch under
+	 * the centre position and overlay the sprite, so the first mouse move
+	 * can restore it (the old code left a ghost sprite at the centre) */
+	vterm_ptr_save_and_draw(lcd, s_mouse_x, s_mouse_y);
 }
 
 /* ---- interactive loop: input -> VT100 -> render -> blit ----------------
@@ -633,18 +770,23 @@ bool vterm_esp32_enter(framebuffer_t *lcd, mach_s3_blit_worker_t *blit_worker)
 					 * any other key returns to the live view first */
 					bool scroll_key = false;
 					if (evt.u.key.code == INPUT_KEY_PAGEUP && vterm_hid_shift_down()) {
-						if (s_renderer.scroll_offset < s_sb_count)
+						if (s_renderer.scroll_offset < s_sb_count) {
+							vterm_sel_scroll(1);
 							s_renderer.scroll_offset++;
+						}
 						s_dirty = true;
 						dmg_mark_full();
 						scroll_key = true;
 					} else if (evt.u.key.code == INPUT_KEY_PAGEDOWN && vterm_hid_shift_down()) {
-						if (s_renderer.scroll_offset > 0)
+						if (s_renderer.scroll_offset > 0) {
+							vterm_sel_scroll(-1);
 							s_renderer.scroll_offset--;
+						}
 						s_dirty = true;
 						dmg_mark_full();
 						scroll_key = true;
 					} else if (s_renderer.scroll_offset > 0) {
+						vterm_sel_scroll(-s_renderer.scroll_offset);
 						s_renderer.scroll_offset = 0;
 						s_dirty = true;
 						dmg_mark_full();

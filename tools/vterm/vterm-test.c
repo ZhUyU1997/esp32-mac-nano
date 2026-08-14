@@ -1320,6 +1320,111 @@ static void test_scrollback_selection(void)
 	tctx_free(&t);
 }
 
+/* Selection + scroll sync: the host translates selection rows by the
+ * scroll delta, and the renderer must re-highlight the same content at
+ * the new rows (reading cells through the scrollback-aware lookup — the
+ * old code read the live screen at the visible row number, which cut the
+ * streaming highlight at the wrong column). */
+static void test_selection_scroll_sync(void)
+{
+	tctx_t t;
+	tctx_new(&t, 30, 80);
+	char buf[2048];
+	size_t off = 0;
+	for (int i = 1; i <= 35; i++)
+		off += (size_t)snprintf(buf + off, sizeof(buf) - off, "LINE%02d\r\n", i);
+	buf[off] = '\0';
+	tctx_feed(&t, buf);
+
+	/* overwrite the top three live rows with long lines so the streaming
+	 * highlight extends further than any LINE%02d row */
+	tctx_feed(&t, "\033[1;1HABCDEFGHIJ0123456789");
+	tctx_feed(&t, "\033[2;1HABCDEFGHIJ0123456789");
+	tctx_feed(&t, "\033[3;1HABCDEFGHIJ0123456789");
+
+	/* scroll back 3 (host translates the selection by the delta): live
+	 * rows 0..2 (the long lines) now show at visible rows 3..5 */
+	t.r.scroll_offset = 3;
+	t.r.sel_active = true;
+	t.r.sel_anchor.row = 3; t.r.sel_anchor.col = 0;
+	t.r.sel_cur.row = 5; t.r.sel_cur.col = 79;
+	term_render_frame(&t.r);
+
+	/* interior row 4 runs to the long line's last non-blank col; the old
+	 * sel_line_end scan read live row 4 (LINE10) and cut it at col 5 */
+	uint32_t mid = t.r.pixels[(4 * TERM_CELL_H + TERM_CELL_H - 1) * t.r.win_w + 10 * TERM_CELL_W];
+	CHECK_EQ("scrolled sel: interior row highlights past LINE length",
+	         (mid >> 16) > 200, 1, "bright bg");
+
+	/* scrollback rows above the selection are not highlighted */
+	uint32_t sb_cell = t.r.pixels[(2 * TERM_CELL_H + TERM_CELL_H - 1) * t.r.win_w + 0];
+	CHECK_EQ("scrolled sel: scrollback row above selection not selected",
+	         (sb_cell >> 16) < 10, 1, "black");
+
+	/* extraction returns the live rows, not the LINE%02d rows */
+	char txt[512];
+	term_render_selected_text(&t.r, txt, sizeof(txt));
+	CHECK_EQ("scrolled sel: text from live rows",
+	         strstr(txt, "ABCDEFGHIJ0123456789") != NULL &&
+	             strstr(txt, "LINE06") == NULL, 1, "text");
+	tctx_free(&t);
+}
+
+/* Selection geometry follows xterm.js: the TOP row is anchored at the
+ * top point's column and the BOTTOM row ends at the bottom point's
+ * column (NOT the min/max of both). Dragging left must keep the start x
+ * fixed and make the end x follow the mouse — the old min/max code let
+ * the end x snap to the start x and moved the start x with the end. */
+static void test_selection_leftward(void)
+{
+	tctx_t t;
+	tctx_new(&t, 30, 80);
+	tctx_feed(&t, "ABCDEFGHIJKLMNOPQRST\r\n");
+	tctx_feed(&t, "ABCDEFGHIJKLMNOPQRST\r\n");
+	tctx_feed(&t, "ABCDEFGHIJKLMNOPQRST\r\n");
+
+	/* anchor (0, 18), drag down-LEFT to (2, 6) */
+	t.r.sel_active = true;
+	t.r.sel_anchor.row = 0; t.r.sel_anchor.col = 18;
+	t.r.sel_cur.row = 2; t.r.sel_cur.col = 6;
+	term_render_frame(&t.r);
+
+	/* row 0 (top = anchor row): [18, sel_line_end] — cols 6..17 stay
+	 * unselected (the old min() moved the start x to the mouse x) */
+	uint32_t row0_left = t.r.pixels[(0 * TERM_CELL_H + TERM_CELL_H - 1) * t.r.win_w + 6 * TERM_CELL_W];
+	CHECK_EQ("left-drag: top row not highlighted left of press x",
+	         (row0_left >> 16) < 10, 1, "black");
+	uint32_t row0_anchor = t.r.pixels[(0 * TERM_CELL_H + TERM_CELL_H - 1) * t.r.win_w + 18 * TERM_CELL_W];
+	CHECK_EQ("left-drag: top row highlighted at press x",
+	         (row0_anchor >> 16) > 200, 1, "bright bg");
+
+	/* row 2 (bottom = cur row): [0, 6] — col 8 stays unselected (the old
+	 * max() aligned the end x with the start x) */
+	uint32_t row2_past = t.r.pixels[(2 * TERM_CELL_H + TERM_CELL_H - 1) * t.r.win_w + 8 * TERM_CELL_W];
+	CHECK_EQ("left-drag: bottom row ends at mouse x",
+	         (row2_past >> 16) < 10, 1, "black");
+	uint32_t row2_end = t.r.pixels[(2 * TERM_CELL_H + TERM_CELL_H - 1) * t.r.win_w + 6 * TERM_CELL_W];
+	CHECK_EQ("left-drag: bottom row highlighted to mouse x",
+	         (row2_end >> 16) > 200, 1, "bright bg");
+
+	/* row 1 (interior): full width — trailing blanks past the 20-char
+	 * content are highlighted too (xterm.js: interior rows are always
+	 * fully selected; the old code trimmed them at the last character) */
+	uint32_t row1_trail = t.r.pixels[(1 * TERM_CELL_H + TERM_CELL_H - 1) * t.r.win_w + 40 * TERM_CELL_W];
+	CHECK_EQ("interior row: trailing blanks highlighted",
+	         (row1_trail >> 16) > 200, 1, "bright bg");
+	uint32_t row1_col0 = t.r.pixels[(1 * TERM_CELL_H + TERM_CELL_H - 1) * t.r.win_w + 0];
+	CHECK_EQ("interior row: starts at col 0",
+	         (row1_col0 >> 16) > 200, 1, "bright bg");
+
+	/* extraction follows the same geometry: row 0 starts at the press x */
+	char txt[512];
+	term_render_selected_text(&t.r, txt, sizeof(txt));
+	CHECK_EQ("left-drag: extracted text starts at press x",
+	         strncmp(txt, "ST\n", 3) == 0, 1, "prefix");
+	tctx_free(&t);
+}
+
 static void test_sync_output(void)
 {
 	tctx_t t;
@@ -1650,6 +1755,8 @@ int main(void)
 	test_latin1_symbols();
 	test_all_glyphs();
 	test_scrollback_selection();
+	test_selection_scroll_sync();
+	test_selection_leftward();
 
 	printf("\n%d passed, %d failed\n", s_passes, s_failures);
 	return s_failures ? 1 : 0;

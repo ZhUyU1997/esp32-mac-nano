@@ -197,14 +197,19 @@ static void cell_style(term_renderer_t *r, int row, int col, const VTermScreenCe
 	uint32_t on = cell->attrs.reverse ? color_to_u32(&bg) : color_to_u32(&fg);
 	uint32_t off = cell->attrs.reverse ? color_to_u32(&fg) : color_to_u32(&bg);
 
-	/* mouse selection: streaming highlight — first/last rows are clipped
-	 * by the anchor/cur columns, interior rows run to the last non-blank
-	 * cell (trailing whitespace is not selected), like xterm. Block mode
-	 * (Alt+drag) selects the plain rectangle. */
+	/* mouse selection: streaming highlight — the top row is anchored at
+	 * the TOP point's column and runs to its last non-blank cell, the
+	 * bottom row ends at the BOTTOM point's column (both matching
+	 * xterm.js), and interior rows are highlighted full width. Block mode
+	 * (Alt+drag) selects the plain rectangle. Selection rows are visible
+	 * rows; the host translates them by the scroll delta so the highlight
+	 * follows the content when the view scrolls. */
 	bool in_sel = false;
 	if (r->sel_active) {
 		int r0 = r->sel_anchor.row < r->sel_cur.row ? r->sel_anchor.row : r->sel_cur.row;
 		int r1 = r->sel_anchor.row > r->sel_cur.row ? r->sel_anchor.row : r->sel_cur.row;
+		int c_top = (r->sel_anchor.row == r0) ? r->sel_anchor.col : r->sel_cur.col;
+		int c_bot = (r->sel_anchor.row == r1) ? r->sel_anchor.col : r->sel_cur.col;
 		int c0 = r->sel_anchor.col < r->sel_cur.col ? r->sel_anchor.col : r->sel_cur.col;
 		int c1 = r->sel_anchor.col > r->sel_cur.col ? r->sel_anchor.col : r->sel_cur.col;
 		if (row >= r0 && row <= r1) {
@@ -213,11 +218,11 @@ static void cell_style(term_renderer_t *r, int row, int col, const VTermScreenCe
 			else if (row == r0 && row == r1)
 				in_sel = col >= c0 && col <= c1;
 			else if (row == r0)
-				in_sel = col >= c0 && (r->sel_line_end < 0 || col <= r->sel_line_end);
+				in_sel = col >= c_top && (r->sel_line_end < 0 || col <= r->sel_line_end);
 			else if (row == r1)
-				in_sel = col <= c1;
+				in_sel = col <= c_bot;
 			else
-				in_sel = r->sel_line_end < 0 || col <= r->sel_line_end;
+				in_sel = true; /* interior rows: full width */
 		}
 	}
 	if (in_sel) {
@@ -391,23 +396,22 @@ void term_render_init(term_renderer_t *r, VTerm *vt, uint32_t *pixels)
 
 void term_render_frame(term_renderer_t *r)
 {
-	int r0 = 0, r1 = -1, c0 = 0, c1 = 0;
+	int r0 = 0, r1 = -1, c_top = 0;
 	if (r->sel_active) {
 		r0 = r->sel_anchor.row < r->sel_cur.row ? r->sel_anchor.row : r->sel_cur.row;
 		r1 = r->sel_anchor.row > r->sel_cur.row ? r->sel_anchor.row : r->sel_cur.row;
-		c0 = r->sel_anchor.col < r->sel_cur.col ? r->sel_anchor.col : r->sel_cur.col;
-		c1 = r->sel_anchor.col > r->sel_cur.col ? r->sel_anchor.col : r->sel_cur.col;
+		c_top = (r->sel_anchor.row == r0) ? r->sel_anchor.col : r->sel_cur.col;
 	}
 	for (int row = 0; row < r->rows; row++) {
-		/* last non-blank col within the selected span, for streaming highlight */
+		/* last non-blank col of the TOP row, for the streaming highlight
+		 * (read through get_render_cell so a scrolled view resolves
+		 * scrollback content correctly). Interior rows are full width and
+		 * the bottom row is a hard range, so they do not need the scan. */
 		r->sel_line_end = -1;
-		if (r->sel_active && row >= r0 && row <= r1) {
-			int from = (row == r0) ? c0 : 0;
-			int to = (row == r1) ? c1 : r->cols - 1;
-			for (int col = from; col <= to; col++) {
+		if (r->sel_active && row == r0 && row != r1) {
+			for (int col = c_top; col < r->cols; col++) {
 				VTermScreenCell cell;
-				VTermPos p = { .row = row, .col = col };
-				if (vterm_screen_get_cell(r->screen, p, &cell) && cell.chars[0] != 0 &&
+				if (get_render_cell(r, row, col, &cell) && cell.chars[0] != 0 &&
 				    cell.chars[0] != (uint32_t)-1)
 					r->sel_line_end = col;
 			}
@@ -439,22 +443,43 @@ size_t term_render_selected_text(const term_renderer_t *r, char *out, size_t cap
 	int r1 = r->sel_anchor.row > r->sel_cur.row ? r->sel_anchor.row : r->sel_cur.row;
 	int c0 = r->sel_anchor.col < r->sel_cur.col ? r->sel_anchor.col : r->sel_cur.col;
 	int c1 = r->sel_anchor.col > r->sel_cur.col ? r->sel_anchor.col : r->sel_cur.col;
+	int c_top = (r->sel_anchor.row == r0) ? r->sel_anchor.col : r->sel_cur.col;
+	int c_bot = (r->sel_anchor.row == r1) ? r->sel_anchor.col : r->sel_cur.col;
 
 	for (int row = r0; row <= r1; row++) {
-		int last = c0 - 1;
+		/* selection rows are visible rows; rows scrolled out of the
+		 * viewport contribute nothing */
+		if (row < 0 || row >= r->rows)
+			continue;
+		/* per-row span matches the highlight geometry */
+		int from, to;
+		if (r->sel_block || (row == r0 && row == r1)) {
+			from = c0;
+			to = c1;
+		} else if (row == r0) {
+			from = c_top;
+			to = r->cols - 1;
+		} else if (row == r1) {
+			from = 0;
+			to = c_bot;
+		} else {
+			from = 0;
+			to = r->cols - 1;
+		}
+		int last = from - 1;
 		if (!r->sel_block) {
-			for (int col = c0; col <= c1; col++) {
+			for (int col = from; col <= to; col++) {
 				VTermScreenCell cell;
 				if (get_render_cell(r, row, col, &cell) && cell.chars[0] != 0 &&
 				    cell.chars[0] != (uint32_t)-1)
 					last = col;
 			}
 		} else {
-			last = c1; /* block mode keeps the full column span */
+			last = to; /* block mode keeps the full column span */
 		}
-		if (last < c0)
+		if (last < from)
 			continue; /* empty line */
-		for (int col = c0; col <= last; col++) {
+		for (int col = from; col <= last; col++) {
 			VTermScreenCell cell;
 			if (!get_render_cell(r, row, col, &cell))
 				continue;
