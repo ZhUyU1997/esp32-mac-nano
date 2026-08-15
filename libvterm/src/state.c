@@ -452,8 +452,19 @@ static int on_text(const char bytes[], size_t len, void *user)
     }
 
     if(state->pos.col + width >= THISROWWIDTH(state)) {
+#ifdef VTERM_ANSI_SYS_WRAP
+      /* ANSI.SYS outchr semantics: write char at right margin, then
+       * immediately wrap to next line (no pending wrap state) — what
+       * BBS-era art expects. Disable the macro for strict xterm
+       * phantom-wrap behaviour. */
+      if(state->mode.autowrap) {
+        linefeed(state);
+        state->pos.col = 0;
+      }
+#else
       if(state->mode.autowrap)
         state->at_phantom = 1;
+#endif
     }
     else {
       state->pos.col += width;
@@ -1041,6 +1052,11 @@ static int on_csi(const char *leader, const long args[], int argcount, const cha
   case 0x43: // CUF - ECMA-48 8.3.20
     count = CSI_ARG_COUNT(args[0]);
     state->pos.col += count;
+#ifdef VTERM_ANSI_SYS_WRAP
+    /* ANSI.SYS: clamp at the right margin instead of running past it */
+    if(state->pos.col >= THISROWWIDTH(state))
+      state->pos.col = THISROWWIDTH(state) - 1;
+#endif
     state->at_phantom = 0;
     break;
 

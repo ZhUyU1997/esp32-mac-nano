@@ -35,7 +35,8 @@ terminal mode.
 xmake run vterm-sdl        # interactive window: 640×480, 80×30, true bash (pty)
 xmake run -w ./ vterm-sdl  # run with the shell's cwd
 xmake run vterm-pty       # text loopback (stdout)
-xmake run vterm-test      # regression suite: 155 asserts + 628 escape seqs
+xmake run vterm-test      # regression suite: 227 asserts + 628 escape seqs
+xmake run vterm-ans       # ANSI art file → PNG/BMP (SAUCE/iCE aware)
 ```
 
 **`tools/vterm/` layout**:
@@ -44,8 +45,11 @@ xmake run vterm-test      # regression suite: 155 asserts + 628 escape seqs
 |---|---|
 | `vterm-sdl.c` | SDL host: pty, keyboard, mouse, clipboard, resize |
 | `vterm-pty.c` | text-mode loopback for scripting/debug |
+| `vterm-ans.c` | ANSI art → PNG/BMP converter (SAUCE/iCE, libansilove-style) |
 | `vterm-test.c` | automated pixel/behaviour regressions |
 | `term_render.c/.h` | platform-free renderer (fonts, colours, cursor, selection) |
+| `sauce.c/.h` | SAUCE metadata record parser (title/cols/font/iCE) |
+| `cp437.c/.h` | CP437 byte → Unicode + UTF-8 feed helpers |
 | `vga8x16.h` | IBM VGA 8×16 glyphs (CP437), from Linux kernel (GPL-2.0) |
 | `unicode_glyph.h` | 16×16 GB2312 CJK glyphs indexed by Unicode (6886) |
 | `HZK16` | source dot-matrix font for the generator |

@@ -26,6 +26,7 @@ typedef struct {
 	VTermPos cursor;
 	bool cursor_visible;
 	bool blink_on;      /* external 2 Hz phase, drives cursor blink */
+	bool ice_mode;      /* ANSI-art iCE: SGR 5 blink -> bright background (steady) */
 	int cursor_shape;   /* VTERM_PROP_CURSORSHAPE_*: 1 block, 2 underline, 3 bar */
 	int cursor_blink;   /* VTERM_PROP_CURSORBLINK from DECSCUSR: 1 blink, 0 steady */
 	bool cursor_shape_set; /* true once an app issued DECSCUSR */

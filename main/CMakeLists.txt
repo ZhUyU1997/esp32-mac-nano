@@ -116,6 +116,9 @@ idf_component_register(SRCS
         )
 
 target_compile_definitions(${COMPONENT_TARGET} PRIVATE RAM_SIZE=4096)
+# ANSI.SYS wrap semantics (immediate wrap at the right margin, CUF clamp)
+# for the BBS-art telnet gallery; remove to get strict xterm behaviour
+target_compile_definitions(${COMPONENT_TARGET} PRIVATE VTERM_ANSI_SYS_WRAP)
 target_compile_definitions(${COMPONENT_TARGET} PUBLIC LV_LVGL_H_INCLUDE_SIMPLE)
 target_compile_definitions(${COMPONENT_TARGET} PRIVATE DISP_WIDTH=640)
 target_compile_definitions(${COMPONENT_TARGET} PRIVATE DISP_HEIGHT=480)

@@ -231,7 +231,11 @@ size_t vterm_input_write(VTerm *vt, const char *bytes, size_t len)
         c = ';';
       }
       if(c == ';') {
-        vt->parser.v.csi.argi++;
+        /* clamp: CSI sequences with more arguments than CSI_ARGS_MAX
+         * (malicious/abusive art, e.g. \x1b[32;101;99;...;p with 30+
+         * args) must drop the excess instead of overflowing the array */
+        if(vt->parser.v.csi.argi < CSI_ARGS_MAX - 1)
+          vt->parser.v.csi.argi++;
         vt->parser.v.csi.args[vt->parser.v.csi.argi] = CSI_ARG_MISSING;
         break;
       }

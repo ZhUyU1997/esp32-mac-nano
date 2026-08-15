@@ -11,6 +11,9 @@ target("libvterm")
     set_languages("c99")
     add_includedirs("libvterm/include", "libvterm/src")
     add_files("libvterm/src/*.c")
+    -- ANSI.SYS wrap semantics (immediate wrap at the right margin, CUF
+    -- clamp) for BBS-era art; remove to get strict xterm behaviour
+    add_defines("VTERM_ANSI_SYS_WRAP")
 
 target("libvterm-test")
     set_kind("binary")
@@ -26,6 +29,15 @@ target("vterm-pty")
     add_includedirs("libvterm/include")
     add_files("tools/vterm/vterm-pty.c")
 
+target("vterm-ans")
+    set_kind("binary")
+    set_languages("c99")
+    add_deps("libvterm")
+    add_includedirs("libvterm/include", "tools/vterm")
+    add_files("tools/vterm/vterm-ans.c", "tools/vterm/term_render.c",
+              "tools/vterm/sauce.c", "tools/vterm/cp437.c")
+    add_syslinks("z")
+
 target("vterm-sdl")
     set_kind("binary")
     set_languages("gnu11")
@@ -39,7 +51,8 @@ target("vterm-test")
     set_languages("c99")
     add_deps("libvterm")
     add_includedirs("libvterm/include", "tools/vterm")
-    add_files("tools/vterm/vterm-test.c", "tools/vterm/term_render.c")
+    add_files("tools/vterm/vterm-test.c", "tools/vterm/term_render.c",
+              "tools/vterm/sauce.c", "tools/vterm/cp437.c")
 
 target("mini-mac-sdl")
     set_kind("binary")

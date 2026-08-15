@@ -17,7 +17,7 @@ pty/bash ──▶ libvterm（vendored, neovim fork v0.3.3）
 
 - **libvterm**：vendored（`libvterm/`），负责终端协议、光标、滚动、宽度。
 - **term_render**：`tools/vterm/term_render.c`，把 cell 渲染成 8×16 点阵。
-- 两个 target：`vterm-test`（测试）、`vterm-sdl`（交互）。
+- 三个 target：`vterm-test`（测试）、`vterm-sdl`（交互）、`vterm-ans`（ANSI art → PNG/BMP）。
 
 ## 2. 字形体系（4 个字形源）
 
@@ -89,7 +89,30 @@ emoji → 16×16（布局 1 或 2 都渲染 16px）
 渲染 16px 溢出到下一格；下一格是空格时不覆盖（wide_occ 保护），
 ☑ 完整显示；连续符号右半互盖（预期行为）。
 
-## 5. 生成 / 验证链路
+## 5. ANSI art 转换（vterm-ans，libansilove 风格）
+
+`vterm-ans` 把 BBS 时代 .ans/.ice/.nfo（CP437 字节流）经 libvterm 解析后
+用 term_render 渲染整幅网格，导出 PNG（默认）或 BMP：
+
+```bash
+xmake run vterm-ans file.ans          # → file.ans.png（读 SAUCE）
+xmake run vterm-ans --ice -o x.png f.ans   # 强制 iCE 颜色
+xmake run vterm-ans --aspect f.ans    # 横向 2×（8×16 格子接近 4:3）
+xmake run vterm-ans --cols 100 f.ans  # 覆盖 SAUCE 列数
+```
+
+- **SAUCE**（`sauce.c`）：解析文件尾部 128 字节元数据——标题/作者/列数/行数/
+  字体码/iCE 标志；COMNT 注释块一并剥离。16colo.rs 实测文件均为完整记录。
+- **CP437**（`cp437.c`）：字节 → Unicode（Python cp437 codec 权威表），喂给
+  libvterm 前转 UTF-8（0x80–0xFF 覆盖 1/2/3 字节编码）。
+- **iCE 颜色**：`term_render` 新增 `ice_mode`——SGR 5（blink）把背景调色板
+  0–7 映射到 8–15，稳态渲染（与 libansilove `icecolors` 一致，非闪烁）。
+- **与 libansilove 的差异**（有意为之）：调色板用 libvterm 的 xterm 调色板
+  （224/64 亮度级）而非 ANSI 经典 170/85；解析用 libvterm（xterm 语义），
+  EL/K、完整 SGR 集按真实终端处理。实测对比：SM-STATS.ANS 与 GLDIG1.ANS
+  与官方 `ansilove` CLI 输出**占格 100% 一致**，仅 16 色调色板数值不同。
+
+## 6. 生成 / 验证链路
 
 ```
 # 字形表
@@ -111,7 +134,7 @@ python3 scripts/gen-char-table.py   # docs/char-table.png（SOURCE vs RENDERED �
 /tmp/cmp3 全 Unicode 0 mismatch
 ```
 
-## 6. 已知取舍
+## 7. 已知取舍
 
 - 宽度以 glibc 2.35（Unicode 14 级 EAW）为准；换系统需重跑 gen-width-tables。
 - C.UTF-8 下 Ambiguous 判 1（xterm 默认）；CJK locale（LANG=zh_CN）会判 2，

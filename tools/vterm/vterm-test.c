@@ -24,6 +24,8 @@
 #include "xterm_seqs.h"
 #include "symbol_glyphs.h"
 #include "emoji_glyphs.h"
+#include "cp437.h"
+#include "sauce.h"
 
 /* UTF-8 encode one code point (host-side helper) */
 static int utf8_encode_cp(uint32_t cp, char *out)
@@ -1773,6 +1775,182 @@ static void test_all_glyphs(void)
 	tctx_free(&t);
 }
 
+static void test_cp437_roundtrip(void)
+{
+	/* ANSI art files are raw CP437 byte streams: every byte 0x80-0xFF
+	 * must survive byte -> Unicode -> CP437 and render as its exact VGA
+	 * glyph (no placeholders). The full map is cross-checked against
+	 * Python's cp437 codec. */
+	tctx_t t;
+	tctx_new(&t, 8, 80);
+	int bad = 0;
+	char utf8[8];
+	for (int b = 0x80; b <= 0xFF; b++) {
+		int n = utf8_encode_cp(cp437_to_unicode((uint8_t)b), utf8);
+		vterm_input_write(t.vt, "\033[2J\033[1;1H", 11);
+		vterm_input_write(t.vt, utf8, (size_t)n);
+		vterm_screen_flush_damage(t.r.screen);
+		term_render_frame(&t.r);
+		int got = cell_char(&t.r, 0, 0);
+		/* 0xFF is the CP437 blank: its VGA glyph is all-zero, byte-identical
+		 * to the space glyph, so the pixel reconstruction reports 0x00.
+		 * Verify it renders empty instead. */
+		if (b == 0xFF) {
+			if (cell_bright(&t.r, 0, 0) != 0) {
+				printf("FAIL cp437 byte 0xFF: blank cell has pixels\n");
+				bad++;
+			}
+			continue;
+		}
+		if (got != b) {
+			printf("FAIL cp437 byte 0x%02X: rendered 0x%02X\n", b, got);
+			bad++;
+		}
+	}
+	CHECK_EQ("cp437: full round-trip 0x80-0xFF", bad, 0, "mismatches");
+	tctx_free(&t);
+}
+
+static void test_cp437_to_utf8(void)
+{
+	/* the feed path must produce valid UTF-8 for every CP437 byte:
+	 * 1-byte ASCII, 2-byte Latin-1/Greek, 3-byte box drawing (U+2500+).
+	 * The old encoder wrote 2-byte sequences for 13-bit code points and
+	 * silently turned every box/block char into a garbage code point. */
+	char out[64];
+	uint8_t in1[] = { 0x41, 0x82, 0xDA }; /* A, é (U+00E9), ┌ (U+250C) */
+	size_t n = cp437_to_utf8(in1, sizeof(in1), out, sizeof(out));
+	CHECK_EQ("cp437->utf8: byte counts 1+2+3", n, 6, "bytes");
+	CHECK_EQ("cp437->utf8: A", (unsigned char)out[0], 0x41, "b0");
+	CHECK_EQ("cp437->utf8: é lead", (unsigned char)out[1], 0xC3, "b1");
+	CHECK_EQ("cp437->utf8: é trail", (unsigned char)out[2], 0xA9, "b2");
+	CHECK_EQ("cp437->utf8: ┌ lead", (unsigned char)out[3], 0xE2, "b3");
+	CHECK_EQ("cp437->utf8: ┌ = U+250C",
+	         (unsigned char)out[3] == 0xE2 && (unsigned char)out[4] == 0x94 &&
+	             (unsigned char)out[5] == 0x8C, 1, "bytes");
+	/* length probe (out=NULL) agrees */
+	CHECK_EQ("cp437->utf8: probe length", cp437_to_utf8(in1, sizeof(in1), NULL, 0), 6, "bytes");
+	/* counting with a small cap does not overrun */
+	size_t small = cp437_to_utf8(in1, sizeof(in1), out, 3);
+	CHECK_EQ("cp437->utf8: cap respects bound", small, 6, "bytes");
+}
+
+/* Build a 128-byte SAUCE record (see sauce.h for the layout). */
+static void sauce_build(uint8_t *rec, const char *title, const char *author,
+                        uint16_t cols, uint16_t rows, uint8_t flags)
+{
+	memset(rec, 0, 128);
+	memcpy(rec, "SAUCE01", 7);
+	memcpy(rec + 7, title, strlen(title));
+	memcpy(rec + 42, author, strlen(author));
+	rec[94] = 1; /* data type: character */
+	rec[95] = 1; /* file type: ANSI */
+	rec[96] = (uint8_t)cols; rec[97] = (uint8_t)(cols >> 8);
+	rec[98] = (uint8_t)rows; rec[99] = (uint8_t)(rows >> 8);
+	rec[108] = flags; /* bit0 = iCE colours */
+}
+
+static void test_sauce_parse(void)
+{
+	/* art + 1-line COMNT record + SAUCE record */
+	const char art[] = "\x1b[31mHELLO\x1b[0m";
+	uint8_t buf[sizeof(art) - 1 + 262 + 128];
+	size_t o = 0;
+	memcpy(buf + o, art, sizeof(art) - 1);
+	o += sizeof(art) - 1;
+	memcpy(buf + o, "COMNT", 5); o += 5;
+	buf[o++] = 1; buf[o++] = 0; /* one 255-byte comment line */
+	memset(buf + o, 'C', 255); o += 255;
+	uint8_t rec[128];
+	sauce_build(rec, "Test Title", "Agent", 80, 24, 1);
+	memcpy(buf + o, rec, 128); o += 128;
+
+	sauce_t s;
+	CHECK_EQ("sauce: parsed with COMNT", sauce_parse(buf, o, &s), 1, "present");
+	CHECK_EQ("sauce: title", strcmp(s.title, "Test Title") == 0, 1, "title");
+	CHECK_EQ("sauce: author", strcmp(s.author, "Agent") == 0, 1, "author");
+	CHECK_EQ("sauce: cols", s.columns, 80, "cols");
+	CHECK_EQ("sauce: rows", s.rows, 24, "rows");
+	CHECK_EQ("sauce: iCE flag", s.flags & 1, 1, "flags");
+	CHECK_EQ("sauce: art len excludes COMNT+SAUCE",
+	         s.data_len, sizeof(art) - 1, "data_len");
+
+	/* no SAUCE record: not present */
+	sauce_t s2;
+	const uint8_t plain[] = "no sauce here";
+	CHECK_EQ("sauce: absent", sauce_parse(plain, sizeof(plain) - 1, &s2), 0, "present");
+	CHECK_EQ("sauce: absent flag", s2.present, 0, "present");
+
+	/* SAUCE record directly after the art (no COMNT) */
+	uint8_t buf2[16 + 128];
+	memcpy(buf2, "SOMETHING HERE!", 16);
+	memcpy(buf2 + 16, rec, 128);
+	sauce_t s3;
+	CHECK_EQ("sauce: bare record", sauce_parse(buf2, sizeof(buf2), &s3), 1, "present");
+	CHECK_EQ("sauce: bare title", strcmp(s3.title, "Test Title") == 0, 1, "title");
+	CHECK_EQ("sauce: bare art len", s3.data_len, 16, "data_len");
+}
+
+static void test_ice_colors(void)
+{
+	/* SGR 5 (blink) + green background: normal xterm semantics = dim
+	 * green + blinking glyph; iCE mode = bright green, steady
+	 * (libansilove icecolors: blink maps bg palette 0-7 to 8-15). */
+	tctx_t t;
+	tctx_new(&t, 30, 80);
+	tctx_feed(&t, "\033[5;42m  \033[0m"); /* two spaces, green bg, blink */
+	uint32_t p = t.r.pixels[0 * t.r.win_w + 0];
+	CHECK_EQ("ice off: bg is dim green (palette 2)", (p >> 8) & 0xFF, 224, "bg g");
+	tctx_free(&t);
+
+	tctx_t t2;
+	tctx_new(&t2, 30, 80);
+	t2.r.ice_mode = true;
+	tctx_feed(&t2, "\033[5;42m  \033[0m");
+	p = t2.r.pixels[0 * t2.r.win_w + 0];
+	CHECK_EQ("ice on: bg bright green (palette 10)", (p >> 8) & 0xFF, 255, "bg g");
+	tctx_free(&t2);
+
+	/* steady: iCE glyph survives the blink dark phase */
+	tctx_t t3;
+	tctx_new(&t3, 30, 80);
+	t3.r.ice_mode = true;
+	tctx_feed(&t3, "\033[5;42mX");
+	t3.r.blink_on = false;
+	term_render_frame(&t3.r);
+	CHECK_EQ("ice on: steady glyph in dark phase", cell_bright(&t3.r, 0, 0) > 10, 1, "bright px");
+	/* without iCE the same dark phase hides the glyph */
+	tctx_t t4;
+	tctx_new(&t4, 30, 80);
+	tctx_feed(&t4, "\033[5;42mX");
+	t4.r.blink_on = false;
+	term_render_frame(&t4.r);
+	CHECK_EQ("ice off: dark phase hides glyph", cell_bright(&t4.r, 0, 0), 0, "bright px");
+	tctx_free(&t4);
+	tctx_free(&t3);
+}
+
+/* SGR sequences with more parameters than libvterm's CSI_ARGS_MAX (16)
+ * used to overflow the parser's argument array and corrupt the heap
+ * (malicious 90s art puts "echo off..." byte values into ESC[..;p). The
+ * parser must drop the excess args instead of crashing. */
+static void test_csi_arg_overflow(void)
+{
+	tctx_t t;
+	tctx_new(&t, 30, 80);
+	/* 31-arg CSI: ESC[32;101;99;104;111;32;...;13p */
+	const char *evil =
+	    "\x1b[32;101;99;104;111;32;111;102;102;13;99;108;115;13;99;116;116;"
+	    "121;32;110;117;108;58;13;101;99;104;111;32;121;32;124;32;102;111;"
+	    "114;109;97;116;32;99;58;13p";
+	tctx_feed(&t, evil);
+	/* parser survived: screen still usable */
+	tctx_feed(&t, "\033[2JOK");
+	CHECK_EQ("csi overflow: parser survives, screen usable",
+	         cell_char(&t.r, 0, 0), 'O', "cell(0,0)");
+	tctx_free(&t);
+}
+
 /* ---- main -------------------------------------------------------------- */
 
 int main(void)
@@ -1832,6 +2010,11 @@ int main(void)
 	test_scrollback_selection();
 	test_selection_scroll_sync();
 	test_selection_leftward();
+	test_cp437_roundtrip();
+	test_cp437_to_utf8();
+	test_sauce_parse();
+	test_ice_colors();
+	test_csi_arg_overflow();
 
 	printf("\n%d passed, %d failed\n", s_passes, s_failures);
 	return s_failures ? 1 : 0;

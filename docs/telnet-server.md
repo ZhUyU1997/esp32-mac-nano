@@ -42,14 +42,34 @@ node scripts/telnet_bash_srv.js --replay capture.bin
 
 ## 素材工具
 
+**art 遍历/检测共享库**（`scripts/art-lib.js`，telnet server 与测试脚本共用）：
+zip 解压（内存 inflate）、目录扫描、SAUCE 剥离/列数、CP437→UTF-8、宽度检测。
+宽度用**光标模拟**（CUP/CUF/CUB/保存恢复，跟踪每行最右列）——流式数字节对
+定位型 art 会高估/低估（ABYSS 数成 157 实际 77、AKO 数成 53 实际 115）。
+
 ```bash
-# 解压 16colo.rs 整站合集（默认 ~/16colo-packs.zip）→ scripts/art/packs/<年份>/
-./scripts/unzip-packs.sh            # 覆盖模式
-./scripts/unzip-packs.sh -n         # 增量（跳过已有）
-./scripts/unzip-packs.sh path.zip   # 指定合集
+# 解压 16colo.rs 整站合集（JS 版，ZIP64 支持，9GB mega 流式读取）
+# 默认 ~/16colo-packs.zip → scripts/art/packs/<年份>/，解压后自动验证并修复：
+#   截断包（缺目录）→ 流式恢复重打包；method 6/1（老 PKZIP）→ unzip 回退重打包
+node scripts/unzip-packs.js             # 覆盖模式
+node scripts/unzip-packs.js -n          # 增量（跳过已有）
+node scripts/unzip-packs.js path.zip    # 指定 mega zip
+node scripts/unzip-packs.js --repair-only  # 只修复不重新解压
 
 # 完整性核对（ZIP64 支持）：对比合集中央目录 vs 实际文件
 node scripts/verify-packs.js
+
+# 批量转换测试：把所有 .ans/.ice 过一遍 vterm-ans（host 工具）
+node scripts/test-art.js                # 全部 packs（~7 万文件）
+node scripts/test-art.js --extract     # 只做解压测试（条目 inflate 验证）
+node scripts/test-art.js --render      # 只做 vterm-ans 渲染测试
+node scripts/test-art.js --count       # 统计文件数/总字节 + 90s 拨号传输时间
+node scripts/test-art.js --quality     # 渲染时额外解码 PNG，检测占位框
+node scripts/test-art.js pack.zip      # 指定 zip/目录/文件
+node scripts/test-art.js --width 0     # 不限宽度（默认跳过 >80 列）
+node scripts/test-art.js --width 120   # 自定义宽度阈值
+node scripts/test-art.js --log run.log # 逐文件结果留档
+# 默认 extract+render 组合跑；逐文件结果直接打 stdout（OK/FAIL/SKIP+尺寸+SAUCE）
 ```
 
 素材存 `scripts/art/packs/`（gitignore，不入库）；`scripts/art/README.md` 有详细说明。
