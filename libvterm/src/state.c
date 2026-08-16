@@ -311,8 +311,16 @@ static int on_text(const char bytes[], size_t len, void *user)
 
   VTermEncodingInstance *encoding =
     state->gsingle_set     ? &state->encoding[state->gsingle_set] :
+    state->vt->mode.utf8   ?
+      /* UTF-8 mode: route ASCII chunks through encoding_utf8 too, so the
+       * multi-byte pending state survives a chunk boundary where the first
+       * chunk starts with an ASCII byte and the next with a high byte.
+       * Only when gl_set is still the default UTF-8 encoding; if an
+       * application selected a glyph set (e.g. DEC graphics via ESC(0)
+       * which maps single bytes), keep that instance. */
+      (state->encoding[state->gl_set].enc == state->encoding_utf8.enc ?
+          &state->encoding_utf8 : &state->encoding[state->gl_set]) :
     !(bytes[eaten] & 0x80) ? &state->encoding[state->gl_set] :
-    state->vt->mode.utf8   ? &state->encoding_utf8 :
                              &state->encoding[state->gr_set];
 
   (*encoding->enc->decode)(encoding->enc, encoding->data,
@@ -452,11 +460,11 @@ static int on_text(const char bytes[], size_t len, void *user)
     }
 
     if(state->pos.col + width >= THISROWWIDTH(state)) {
-#ifdef VTERM_ANSI_SYS_WRAP
-      /* ANSI.SYS outchr semantics: write char at right margin, then
-       * immediately wrap to next line (no pending wrap state) — what
-       * BBS-era art expects. Disable the macro for strict xterm
-       * phantom-wrap behaviour. */
+#ifdef VTERM_ANSI_SYS_MODE
+      /* ANSI.SYS mode (BBS-era art): write char at right margin, then
+       * immediately wrap to next line. libansilove wraps before the
+       * next byte when the column is full, which is equivalent for
+       * both a following char and a following CSI. */
       if(state->mode.autowrap) {
         linefeed(state);
         state->pos.col = 0;
@@ -510,8 +518,15 @@ static int on_control(unsigned char control, void *user)
   case 0x0b: // VT
   case 0x0c: // FF
     linefeed(state);
+#ifdef VTERM_ANSI_SYS_MODE
+    /* ANSI.SYS: LF also returns the cursor to column 0. BBS art saved
+     * with bare-LF line endings relies on it (libansilove homes too);
+     * CRLF files are unaffected since \r already homes. */
+    state->pos.col = 0;
+#else
     if(state->mode.newline)
       state->pos.col = 0;
+#endif
     break;
 
   case 0x0d: // CR - ECMA-48 8.3.15
@@ -1052,8 +1067,11 @@ static int on_csi(const char *leader, const long args[], int argcount, const cha
   case 0x43: // CUF - ECMA-48 8.3.20
     count = CSI_ARG_COUNT(args[0]);
     state->pos.col += count;
-#ifdef VTERM_ANSI_SYS_WRAP
-    /* ANSI.SYS: clamp at the right margin instead of running past it */
+#ifdef VTERM_ANSI_SYS_MODE
+    /* ANSI.SYS mode: clamp at the right margin. Clamp to the row
+     * width (not width-1): the next char then wraps to the next row,
+     * exactly like libansilove — clamping to width-1 would draw it on
+     * the last column and never advance the row. */
     if(state->pos.col >= THISROWWIDTH(state))
       state->pos.col = THISROWWIDTH(state) - 1;
 #endif
@@ -1142,7 +1160,20 @@ static int on_csi(const char *leader, const long args[], int argcount, const cha
       rect.start_col = 0; rect.end_col = state->cols;
       for(int row = rect.start_row; row < rect.end_row; row++)
         set_lineinfo(state, row, FORCE, DWL_OFF, DHL_OFF);
+#ifdef VTERM_ANSI_SYS_MODE
+      /* ANSI.SYS (and libansilove): ED 2 clears to the default
+       * background, not the current pen bg — art sets e.g. \x1b[45m\x1b[2J
+       * to paint the screen, but the reference renderer drops the bg. */
       erase(state, rect, selective);
+      /* ANSI.SYS: ED 2 also homes the cursor; xterm leaves it in
+       * place. BBS art clears the screen then redraws from the top
+       * left, so without this every 2J art is shifted down by the
+       * pre-clear rows (libansilove homes too). */
+      state->pos.row = 0;
+      state->pos.col = 0;
+#else
+      erase(state, rect, selective);
+#endif
       break;
 
     case 3:
@@ -1393,6 +1424,28 @@ static int on_csi(const char *leader, const long args[], int argcount, const cha
 
   case 0x6d: // SGR - ECMA-48 8.3.117
     vterm_state_setpen(state, args, argcount);
+    break;
+
+  case 0x74: // PabloDraw 24-bit colour: ESC[0;R;G;Bt (bg) / ESC[1;R;G;Bt (fg)
+    if(argcount >= 4) {
+      VTermColor col;
+      VTermValue val;
+      VTermAttr attr;
+      vterm_color_rgb(&col, CSI_ARG(args[1]), CSI_ARG(args[2]), CSI_ARG(args[3]));
+      if(CSI_ARG(args[0]) == 0) {
+        attr = VTERM_ATTR_BACKGROUND;
+        state->pen.bg = col;
+      } else if(CSI_ARG(args[0]) == 1) {
+        attr = VTERM_ATTR_FOREGROUND;
+        state->pen.fg = col;
+        /* PabloDraw 24-bit fg: bold (SGR 1) drops it (see pen.c) */
+        state->pen.fg_from_t = 1;
+      } else
+        break;
+      val.color = col;
+      if(state->callbacks && state->callbacks->setpenattr)
+        (*state->callbacks->setpenattr)(attr, &val, state->cbdata);
+    }
     break;
 
   case LEADER('?', 0x6d): // DECSGR

@@ -29,8 +29,29 @@ static const uint16_t k_cp437_hi[128] = {
 	0x00B0, 0x2219, 0x00B7, 0x221A, 0x207F, 0x00B2, 0x25A0, 0x00A0,
 };
 
+/* byte 0x01-0x1F -> Unicode: the VGA glyphs (smilies, card suits,
+ * music notes, arrows…). Python's cp437 codec passes C0 through
+ * unchanged, but ANSI art uses these bytes as glyphs — libansilove
+ * renders them too (verified against its output). Tab, LF, CR and ESC
+ * keep their control semantics. */
+static const uint16_t k_cp437_lo[0x1F] = {
+	/* 0x01-0x08 */
+	0x263A, 0x263B, 0x2665, 0x2666, 0x2663, 0x2660, 0x2022, 0x25D8,
+	0x0009, 0x000A, 0x25D9, 0x2642, 0x000D, 0x2640, 0x266A, 0x266B,
+	0x263C, 0x25BA, 0x25C4, 0x2195, 0x203C, 0x00B6, 0x00A7, 0x25AC,
+	0x2193, 0x2192, 0x001B, 0x221F, 0x2194, 0x25B2, 0x25BF,
+};
+
 uint32_t cp437_to_unicode(uint8_t b)
 {
+	if (b == 0x7f)
+		return 0x25A0; /* VGA 0x7F is a solid square, not DEL */
+	if (b == 0x00)
+		return 0x20; /* VGA NULL glyph is blank: render as a space so the
+		              * column advances (libansilove draws it blank and
+		              * advances too); BBS art uses \x1b[D\x00 to erase */
+	if (b >= 0x01 && b <= 0x1F)
+		return k_cp437_lo[b - 0x01];
 	return b < 0x80 ? b : k_cp437_hi[b - 0x80];
 }
 

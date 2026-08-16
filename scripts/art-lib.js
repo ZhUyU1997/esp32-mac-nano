@@ -549,6 +549,14 @@ function convertPiece(name, buf, maxWidth) {
 	return { name, buf: out, w, rows };
 }
 
+/* true for ANSI.SYS keyboard-reassignment scripts (\x1b[P1;P2;...p),
+ * e.g. BBS key-macro files. They are terminal configuration, not art:
+ * nothing is displayed, so rendering/comparing them is meaningless
+ * (libansilove mis-renders the parameter bytes as characters). */
+function isKeyboardScript(buf) {
+	return /\x1b\[[0-9;]+p/.test(buf);
+}
+
 module.exports = {
 	ART_RE,
 	ART_ALL_RE,
@@ -564,4 +572,5 @@ module.exports = {
 	readZipAsync,
 	collectUnits,
 	convertPiece,
+	isKeyboardScript,
 };

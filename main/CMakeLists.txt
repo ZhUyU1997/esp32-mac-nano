@@ -116,9 +116,16 @@ idf_component_register(SRCS
         )
 
 target_compile_definitions(${COMPONENT_TARGET} PRIVATE RAM_SIZE=4096)
-# ANSI.SYS wrap semantics (immediate wrap at the right margin, CUF clamp)
-# for the BBS-art telnet gallery; remove to get strict xterm behaviour
-target_compile_definitions(${COMPONENT_TARGET} PRIVATE VTERM_ANSI_SYS_WRAP)
+# ANSI.SYS semantics for the BBS-art telnet gallery: immediate wrap
+# at the right margin, CUF clamp, ED 2 homes the cursor. Remove for
+# strict xterm behaviour.
+target_compile_definitions(${COMPONENT_TARGET} PRIVATE VTERM_ANSI_SYS_MODE)
+# CGA/ANSI.SYS 16-colour palette (brown at SGR 33, 85/255 brights)
+# instead of the upstream xterm palette; matches libansilove rendering.
+target_compile_definitions(${COMPONENT_TARGET} PRIVATE VTERM_ANSI_SYS_PALETTE)
+# ESP32 memory optimisation: ScreenCell 36B -> 16B (see libvterm/include/vterm.h).
+# Host tools keep the default 6 (full combining support).
+target_compile_definitions(${COMPONENT_TARGET} PRIVATE VTERM_MAX_CHARS_PER_CELL=1)
 target_compile_definitions(${COMPONENT_TARGET} PUBLIC LV_LVGL_H_INCLUDE_SIMPLE)
 target_compile_definitions(${COMPONENT_TARGET} PRIVATE DISP_WIDTH=640)
 target_compile_definitions(${COMPONENT_TARGET} PRIVATE DISP_HEIGHT=480)

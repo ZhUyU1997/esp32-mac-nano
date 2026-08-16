@@ -37,7 +37,6 @@ static void decode_utf8(VTermEncoding *enc, void *data_,
 
   for(; *pos < bytelen && *cpi < cplen; (*pos)++) {
     unsigned char c = bytes[*pos];
-
 #ifdef DEBUG_PRINT_UTF8
     printf(" pos=%zd c=%02x rem=%d\n", *pos, c, data->bytes_remaining);
 #endif

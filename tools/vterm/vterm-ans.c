@@ -35,20 +35,128 @@
 
 static int s_rows_screen = 256; /* generous screen; cropped to content */
 
+/* Walk the art bytes and return the deepest row any content can reach:
+ * LF counts, CUP (\x1b[n;mH/f) jumps, CUD/CUU (nB/nA) moves, and ED 2
+ * (which homes the cursor and drops the rows before it). Used to size
+ * the libvterm screen so long art does not scroll. */
+static int scan_max_row(const uint8_t *buf, size_t len)
+{
+	int row = 0, col = 0, max = 0;
+	const int cols = 80; /* art width; CUF wraps at it */
+	for (size_t i = 0; i < len; i++) {
+		uint8_t b = buf[i];
+		if (b == '\n') {
+			row++;
+			col = 0;
+			if (row > max)
+				max = row;
+		} else if (b == '\r') {
+			col = 0;
+		} else if (b >= 0x20) {
+			/* ordinary char (incl. CP437 0x80+): advances the column;
+			 * writing at the margin wraps the next char to the next
+			 * row — long art lines wrap hundreds of rows this way. */
+			col++;
+			if (col >= cols) {
+				row++;
+				col = 0;
+				if (row > max)
+					max = row;
+			}
+		} else if (b == 0x00) {
+			/* NUL renders as a blank char (see cp437.c): advances too */
+			col++;
+			if (col >= cols) {
+				row++;
+				col = 0;
+				if (row > max)
+					max = row;
+			}
+		} else if (b == 0x1b && i + 1 < len && buf[i + 1] == '[') {
+			size_t j = i + 2;
+			int n = -1;
+			while (j < len && buf[j] >= '0' && buf[j] <= '9') {
+				n = (n < 0 ? 0 : n * 10) + (buf[j] - '0');
+				j++;
+			}
+			if (j < len && buf[j] == ';') {
+				/* CUP: n;mH/f, n is the 1-based target row */
+				j++;
+				while (j < len && buf[j] >= '0' && buf[j] <= '9')
+					j++;
+				if (j < len && (buf[j] == 'H' || buf[j] == 'f')) {
+					int r = n < 1 ? 1 : n;
+					if (r - 1 > max)
+						max = r - 1;
+					row = r - 1; /* CUP moves the cursor: later LF counts
+					               from here, not from 0 (art initialises
+					               with a run of CUP before the LF stream) */
+				}
+			} else if (j < len && buf[j] == 'B') {
+				row += n < 1 ? 1 : n;
+				if (row > max)
+					max = row;
+			} else if (j < len && buf[j] == 'A') {
+				/* CUU only moves the cursor up for over-drawing; the deepest
+				 * row content can reach is set by LF/CUD/CUP, not by how
+				 * often art redraws a line. Not decrementing over-estimates
+				 * the screen size slightly (harmless: it only avoids
+				 * scrolling); under-estimating scrolls content away. */
+			} else if (j < len && buf[j] == 'C') {
+				/* CUF past the right margin wraps the next char to the
+				 * next row (libansilove clamps to the width, the char
+				 * then wraps); art uses e.g. \x1b[79C\x1b[1C heavily. */
+				col += n < 1 ? 1 : n;
+				/* a char is drawn at the margin too, so wrapping can be
+				 * triggered from col cols-1; count that conservatively
+				 * (over-counting is harmless, under-counting scrolls). */
+				if (col >= cols - 1) {
+					row++;
+					col = 0;
+					if (row > max)
+						max = row;
+				}
+			} else if (j < len && buf[j] == 'D') {
+				col -= n < 1 ? 1 : n;
+				if (col < 0)
+					col = 0;
+			} else if (j < len && buf[j] == 'J' && n == 2) {
+				row = 0; /* ED 2 homes: rows before it are gone */
+				col = 0;
+			}
+		}
+	}
+	return max;
+}
+
 /* ---- libvterm callbacks ------------------------------------------------ */
+
+/* deepest row that received a cell change (chars/attrs/erase), 1-based
+ * exclusive end_row; and the highest cursor row reached (1-based) as a
+ * fallback for animations that finish with an empty screen. */
+typedef struct { int max_row; int damage_row; int screen_rows; } ans_ctx_t;
 
 static int ans_damage(VTermRect rect, void *user)
 {
-	(void)rect;
-	(void)user;
+	ans_ctx_t *ctx = user;
+	/* a full-screen erase (ED 2, or the initial reset) wipes the canvas:
+	 * libansilove's rowMax resets too (clear + redraw art shrinks back),
+	 * so restart the count instead of keeping the pre-clear rows. */
+	if (rect.start_row == 0 && rect.end_row >= ctx->screen_rows) {
+		ctx->damage_row = 0;
+		return 1;
+	}
+	/* deepest row with any cell change (chars/attrs/bg): libansilove's
+	 * canvas reaches the last row a character was written to — trailing
+	 * LF-only rows never damage and must not extend the canvas. */
+	if (rect.end_row > ctx->damage_row)
+		ctx->damage_row = rect.end_row;
 	return 1;
 }
 
-/* highest cursor row reached (1-based). ANSI art end-frames often finish
- * with an empty screen (clear + overwrite animations); libansilove still
- * renders them at the cursor's max row, so track it as a fallback. */
-typedef struct { int max_row; } ans_ctx_t;
-
+/* highest cursor row reached. ANSI art end-frames often finish with an
+ * empty screen (clear + overwrite animations); libansilove still renders
+ * them at the cursor's max row, so track it as a fallback. */
 static int ans_movecursor(VTermPos pos, VTermPos oldpos, int visible, void *user)
 {
 	(void)oldpos;
@@ -263,11 +371,12 @@ static int write_png(const char *path, const uint32_t *px, int w, int h, int xsc
 static void usage(const char *prog)
 {
 	fprintf(stderr,
-	    "usage: %s [-o out.png|out.bmp] [--ice] [--cols N] [--aspect] file\n"
+	    "usage: %s [-o out.png|out.bmp] [--ice] [--cols N] [--aspect] [--utf8] file\n"
 	    "  -o FILE   output image (default: file with .png extension)\n"
 	    "  --ice     force iCE colours (SGR 5 blink -> bright background)\n"
 	    "  --cols N  override the grid width (default: SAUCE cols or 80)\n"
-	    "  --aspect  2x horizontal stretch (8x16 cells look square-ish)\n",
+	    "  --aspect  2x horizontal stretch (8x16 cells look square-ish)\n"
+	    "  --utf8    input is already UTF-8 (no CP437 conversion)\n",
 	    prog);
 }
 
@@ -275,7 +384,7 @@ int main(int argc, char **argv)
 {
 	const char *out_path = NULL;
 	const char *in_path = NULL;
-	bool ice = false, aspect = false;
+	bool ice = false, aspect = false, utf8_in = false;
 	int cols_override = 0;
 
 	for (int i = 1; i < argc; i++) {
@@ -285,6 +394,8 @@ int main(int argc, char **argv)
 			ice = true;
 		} else if (!strcmp(argv[i], "--aspect")) {
 			aspect = true;
+		} else if (!strcmp(argv[i], "--utf8")) {
+			utf8_in = true;
 		} else if (!strcmp(argv[i], "--cols") && i + 1 < argc) {
 			cols_override = atoi(argv[++i]);
 		} else if (argv[i][0] == '-') {
@@ -314,8 +425,15 @@ int main(int argc, char **argv)
 		    (sauce.flags & 1) ? ", iCE" : "");
 	}
 
-	/* art bytes = before the SAUCE record; trim trailing EOF/NUL */
+	/* art bytes = before the SAUCE record. SUB (0x1A) terminates the art
+	 * anywhere: everything after it is BBS metadata (file name, desc),
+	 * libansilove stops there too. Then trim trailing EOF/NUL. */
 	size_t art_len = has_sauce ? sauce.data_len : len;
+	for (size_t i = 0; i < art_len; i++)
+		if (buf[i] == 0x1A) {
+			art_len = i;
+			break;
+		}
 	while (art_len > 0 && (buf[art_len - 1] == 0x1A || buf[art_len - 1] == 0))
 		art_len--;
 
@@ -326,32 +444,61 @@ int main(int argc, char **argv)
 		free(buf);
 		return 1;
 	}
-	/* screen must fit tall art; the renderer crops to the content box */
+	/* screen must fit tall art; the renderer crops to the content box.
+	 * libansilove renders on an unbounded canvas (its rowMax): art taller
+	 * than the screen must NOT scroll — pre-scan the byte stream for the
+	 * deepest row any content can reach and size the libvterm screen
+	 * accordingly (the ESP32 gallery is a real terminal and scrolls). */
 	int rows = s_rows_screen;
+	int scan = scan_max_row(buf, art_len) + 1;
+	/* generous headroom: content reaching row rows-1 and then LF'ing
+	 * again scrolls (libansilove's canvas never does) and the scan
+	 * under-counts (CUF column wraps, CUU coverage, border cases), so
+	 * give it 128 rows of slack — the cost is only memory. */
+	if (scan > rows)
+		rows = scan < 8064 ? scan + 128 : 8192;
 	if (has_sauce && sauce.rows > rows)
 		rows = sauce.rows < 1024 ? sauce.rows : 1024;
 
 	/* feed the art through libvterm */
 	VTerm *vt = vterm_new(rows, cols);
 	vterm_set_utf8(vt, 1);
+	/* ANSI.SYS default fg is colour 7 (light grey), libvterm's is xterm
+	 * white (240) — after a SGR 0 reset both must render colour 7, or
+	 * every uncoloured char drifts from libansilove. */
+	VTermColor def_fg, def_bg;
+	vterm_color_indexed(&def_fg, 7);
+	vterm_color_indexed(&def_bg, 0);
+	vterm_state_set_default_colors(vterm_obtain_state(vt), &def_fg, &def_bg);
 	VTermScreen *scr = vterm_obtain_screen(vt);
 	ans_ctx_t ctx = { 0 };
+	ctx.screen_rows = rows;
 	VTermScreenCallbacks cbs = {
 		.damage = ans_damage,
 		.movecursor = ans_movecursor,
 	};
-	vterm_screen_set_callbacks(scr, &cbs, &ctx);
 	vterm_screen_reset(scr, 1);
+	/* register after reset so the reset's full-screen erase does not
+	 * inflate damage_row to the whole screen */
+	vterm_screen_set_callbacks(scr, &cbs, &ctx);
 
-	size_t utf8_len = cp437_to_utf8(buf, art_len, NULL, 0);
-	char *utf8 = malloc(utf8_len);
-	if (!utf8) {
+	char *utf8;
+	size_t utf8_len;
+	if (utf8_in) {
+		/* already UTF-8 (e.g. the telnet server's converted bytes) */
+		utf8 = (char *)buf;
+		utf8_len = art_len;
+	} else {
+		utf8_len = cp437_to_utf8(buf, art_len, NULL, 0);
+		utf8 = malloc(utf8_len);
+		if (!utf8) {
+			free(buf);
+			vterm_free(vt);
+			return 1;
+		}
+		cp437_to_utf8(buf, art_len, utf8, utf8_len);
 		free(buf);
-		vterm_free(vt);
-		return 1;
 	}
-	cp437_to_utf8(buf, art_len, utf8, utf8_len);
-	free(buf);
 	vterm_input_write(vt, utf8, utf8_len);
 	free(utf8);
 	vterm_screen_flush_damage(scr);
@@ -364,6 +511,8 @@ int main(int argc, char **argv)
 	VTermState *state = vterm_obtain_state(vt);
 	int last_row = screen_last_row(scr, state, rows, cols);
 	if (last_row < 0)
+		last_row = ctx.damage_row - 1;
+	if (last_row < 0)
 		last_row = ctx.max_row - 1;
 	if (last_row < 0 && has_sauce && sauce.rows > 0)
 		last_row = (int)sauce.rows - 1;
@@ -372,7 +521,15 @@ int main(int argc, char **argv)
 		vterm_free(vt);
 		return 1;
 	}
+	/* libansilove's canvas reaches the deepest row that received a cell
+	 * change (a written char, an attr, an erase — but not a bare LF or
+	 * cursor move): trailing LF-only rows and empty CUP gaps after the
+	 * last content stay cropped, while overwrite gaps inside the content
+	 * (e.g. CRS-CCL's black-shadow rows) are kept. damage_row is the
+	 * 1-based exclusive end of that deepest damaged rect. */
 	int img_h = last_row + 1;
+	if (ctx.damage_row > img_h)
+		img_h = ctx.damage_row;
 
 	/* render the grid */
 	crc32_init();
@@ -384,7 +541,11 @@ int main(int argc, char **argv)
 	}
 	term_renderer_t r;
 	term_render_init(&r, vt, px);
-	r.ice_mode = ice || (has_sauce && (sauce.flags & 1));
+	/* iCE (SGR 5 -> bright background) is opt-in only: libansilove does not
+	 * read the SAUCE iCE flag by default (-S enables it), so auto-enabling
+	 * it here makes art with a SAUCE iCE flag render with brighter
+	 * backgrounds than the reference. */
+	r.ice_mode = ice;
 	r.blink_on = true; /* iCE / art render is steady */
 	term_render_frame(&r);
 	vterm_free(vt);

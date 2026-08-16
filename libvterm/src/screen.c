@@ -336,11 +336,28 @@ static int erase_internal(VTermRect rect, int selective, void *user)
         continue;
 
       cell->chars[0] = 0;
+#ifdef VTERM_ANSI_SYS_MODE
+      /* ANSI.SYS (and libansilove): ED 2 clears to the default black
+       * background, not the current pen bg — art sets e.g. \x1b[45m\x1b[2J
+       * to paint the screen but the reference renderer drops the bg. */
+      {
+        VTermColor def_bg;
+        vterm_color_indexed(&def_bg, 0);
+        bool full_screen = rect.start_row == 0 && rect.start_col == 0 &&
+                           rect.end_row == screen->rows && rect.end_col == screen->cols;
+        cell->pen = (ScreenPen){
+          /* Only copy .fg and .bg; leave things like rv in reset state */
+          .fg = screen->pen.fg,
+          .bg = full_screen ? def_bg : screen->pen.bg,
+        };
+      }
+#else
       cell->pen = (ScreenPen){
         /* Only copy .fg and .bg; leave things like rv in reset state */
         .fg = screen->pen.fg,
         .bg = screen->pen.bg,
       };
+#endif
       cell->pen.dwl = info->doublewidth;
       cell->pen.dhl = info->doubleheight;
     }

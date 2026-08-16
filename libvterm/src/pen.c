@@ -10,6 +10,32 @@ typedef struct {
   uint8_t red, green, blue;
 } VTermRGB;
 
+#ifdef VTERM_ANSI_SYS_PALETTE
+static const VTermRGB ansi_colors[] = {
+  /* R    G    B
+   * CGA / ANSI.SYS palette (BBS-era DOS display, matches libansilove):
+   * SGR 33 renders brown, brights use the 85/255 levels. */
+  {   0,   0,   0 }, // black
+  { 170,   0,   0 }, // red
+  {   0, 170,   0 }, // green
+  { 170,  85,   0 }, // brown (DOS yellow is brown without bold)
+  {   0,   0, 170 }, // blue
+  { 170,   0, 170 }, // magenta
+  {   0, 170, 170 }, // cyan
+  { 170, 170, 170 }, // light grey
+
+  // high intensity
+  {  85,  85,  85 }, // dark grey
+  { 255,  85,  85 }, // red
+  {  85, 255,  85 }, // green
+  { 255, 255,  85 }, // yellow
+  {  85,  85, 255 }, // blue
+  { 255,  85, 255 }, // magenta
+  {  85, 255, 255 }, // cyan
+  { 255, 255, 255 }, // white
+};
+#else
+/* Upstream xterm palette (no CGA brown; SGR 33 is pure yellow). */
 static const VTermRGB ansi_colors[] = {
   /* R    G    B */
   {   0,   0,   0 }, // black
@@ -31,6 +57,7 @@ static const VTermRGB ansi_colors[] = {
   {  64, 255, 255 }, // cyan
   { 255, 255, 255 }, // white for real
 };
+#endif
 
 static int ramp6[] = {
   0x00, 0x33, 0x66, 0x99, 0xCC, 0xFF,
@@ -152,6 +179,10 @@ static void set_pen_col_ansi(VTermState *state, VTermAttr attr, long col)
   VTermColor *colp = (attr == VTERM_ATTR_BACKGROUND) ? &state->pen.bg : &state->pen.fg;
 
   vterm_color_indexed(colp, col);
+  if(attr == VTERM_ATTR_FOREGROUND) {
+    state->pen.last_fg16 = *colp;
+    state->pen.fg_from_t = 0;
+  }
 
   setpenattr_col(state, attr, *colp);
 }
@@ -181,6 +212,8 @@ INTERNAL void vterm_state_resetpen(VTermState *state)
   state->pen.baseline = 0;  setpenattr_int (state, VTERM_ATTR_BASELINE, 0);
 
   state->pen.fg = state->default_fg;  setpenattr_col(state, VTERM_ATTR_FOREGROUND, state->default_fg);
+  state->pen.last_fg16 = state->default_fg;
+  state->pen.fg_from_t = 0;
   state->pen.bg = state->default_bg;  setpenattr_col(state, VTERM_ATTR_BACKGROUND, state->default_bg);
 }
 
@@ -294,6 +327,14 @@ INTERNAL void vterm_state_setpen(VTermState *state, const long args[], int argco
 
     case 1: { // Bold on
       const VTermColor *fg = &state->pen.fg;
+      if(state->pen.fg_from_t) {
+        /* PabloDraw 24-bit (`t`) foreground: bold drops it and falls back
+         * to the last indexed fg (matches PabloDraw Ansi.load.cs and
+         * libansilove foreground24=0). */
+        state->pen.fg = state->pen.last_fg16;
+        state->pen.fg_from_t = 0;
+        setpenattr_col(state, VTERM_ATTR_FOREGROUND, state->pen.fg);
+      }
       state->pen.bold = 1;
       setpenattr_bool(state, VTERM_ATTR_BOLD, 1);
       if(!VTERM_COLOR_IS_DEFAULT_FG(fg) && VTERM_COLOR_IS_INDEXED(fg) && fg->indexed.idx < 8 && state->bold_is_highbright)
@@ -336,6 +377,13 @@ INTERNAL void vterm_state_setpen(VTermState *state, const long args[], int argco
     case 7: // Reverse on
       state->pen.reverse = 1;
       setpenattr_bool(state, VTERM_ATTR_REVERSE, 1);
+      if(state->pen.fg_from_t) {
+        /* Same as bold: PabloDraw 24-bit fg does not survive attribute
+         * switches (libansilove's invert only swaps the 16-color pair). */
+        state->pen.fg = state->pen.last_fg16;
+        state->pen.fg_from_t = 0;
+        setpenattr_col(state, VTERM_ATTR_FOREGROUND, state->pen.fg);
+      }
       break;
 
     case 8: // Conceal on
@@ -406,6 +454,7 @@ INTERNAL void vterm_state_setpen(VTermState *state, const long args[], int argco
       if(argcount - argi < 1)
         return;
       argi += 1 + lookup_colour(state, CSI_ARG(args[argi+1]), args+argi+2, argcount-argi-2, &state->pen.fg);
+      state->pen.fg_from_t = 0;
       setpenattr_col(state, VTERM_ATTR_FOREGROUND, state->pen.fg);
       break;
 

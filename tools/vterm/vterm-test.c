@@ -617,6 +617,29 @@ static void test_rep_and_wide(void)
 	tctx_free(&t);
 }
 
+static void test_utf8_split_boundary(void)
+{
+	/* A valid 3-byte UTF-8 sequence split across an input chunk whose
+	 * first chunk starts with an ASCII byte and the second with a high
+	 * byte must decode intact (upstream bug: on_text() picks the decoder
+	 * instance from the chunk's first byte, so the pending state is lost
+	 * -> U+FFFD). */
+	tctx_t t;
+	tctx_new(&t, 30, 80);
+	vterm_input_write(t.vt, "x\xe2\x96", 3); /* 'x' + first 2 bytes of U+2588 */
+	vterm_input_write(t.vt, "\x88", 1);        /* continuation byte, high-byte chunk */
+	vterm_screen_flush_damage(t.r.screen);
+	term_render_frame(&t.r);
+	VTermScreenCell cell;
+	VTermPos p = { 0, 1 };
+	vterm_screen_get_cell(t.r.screen, p, &cell);
+	CHECK_EQ("utf8 split: 3-byte seq survives chunk boundary", cell.chars[0], 0x2588, "cell(0,1)");
+	p.col = 0;
+	vterm_screen_get_cell(t.r.screen, p, &cell);
+	CHECK_EQ("utf8 split: preceding ASCII intact", cell.chars[0], 'x', "cell(0,0)");
+	tctx_free(&t);
+}
+
 static void test_combining_chars(void)
 {
 	tctx_t t;
@@ -627,7 +650,11 @@ static void test_combining_chars(void)
 	VTermPos p = { 0, 0 };
 	vterm_screen_get_cell(t.r.screen, p, &cell);
 	CHECK_EQ("combining: base 'e'", cell.chars[0], 'e', "chars[0]");
+#if VTERM_MAX_CHARS_PER_CELL > 1
+	/* ESP32 memory optimisation (VTERM_MAX_CHARS_PER_CELL=1) drops
+	 * combining sequences by design — see vterm.h */
 	CHECK_EQ("combining: accent joined", cell.chars[1], 0x301, "chars[1]");
+#endif
 	tctx_free(&t);
 }
 
@@ -1255,7 +1282,11 @@ static void test_bold_bright(void)
 			if (r1 > dim_max) dim_max = r1;
 			if (r2 > bold_max) bold_max = r2;
 		}
+#ifdef VTERM_ANSI_SYS_PALETTE
+	CHECK_EQ("bold: normal red is dim (palette r=170)", dim_max == 170, 1, "dim red");
+#else
 	CHECK_EQ("bold: normal red is dim (palette r=224)", dim_max == 224, 1, "dim red");
+#endif
 	CHECK_EQ("bold: bold red is brighter (palette 9)", bold_max > dim_max, 1, "bright red");
 	tctx_free(&t);
 }
@@ -1841,13 +1872,15 @@ static void sauce_build(uint8_t *rec, const char *title, const char *author,
 {
 	memset(rec, 0, 128);
 	memcpy(rec, "SAUCE01", 7);
-	memcpy(rec + 7, title, strlen(title));
-	memcpy(rec + 42, author, strlen(author));
-	rec[94] = 1; /* data type: character */
-	rec[95] = 1; /* file type: ANSI */
-	rec[96] = (uint8_t)cols; rec[97] = (uint8_t)(cols >> 8);
-	rec[98] = (uint8_t)rows; rec[99] = (uint8_t)(rows >> 8);
-	rec[108] = flags; /* bit0 = iCE colours */
+	rec[7] = '0'; rec[8] = '0'; /* version: digits, so the parser
+	                             * detects the standard layout */
+	memcpy(rec + 9, title, strlen(title));
+	memcpy(rec + 44, author, strlen(author));
+	rec[96] = 1; /* data type: character */
+	rec[97] = 1; /* file type: ANSI */
+	rec[98] = (uint8_t)cols; rec[99] = (uint8_t)(cols >> 8);
+	rec[100] = (uint8_t)rows; rec[101] = (uint8_t)(rows >> 8);
+	rec[107] = flags; /* bit0 = iCE colours */
 }
 
 static void test_sauce_parse(void)
@@ -1900,7 +1933,11 @@ static void test_ice_colors(void)
 	tctx_new(&t, 30, 80);
 	tctx_feed(&t, "\033[5;42m  \033[0m"); /* two spaces, green bg, blink */
 	uint32_t p = t.r.pixels[0 * t.r.win_w + 0];
+#ifdef VTERM_ANSI_SYS_PALETTE
+	CHECK_EQ("ice off: bg is dim green (palette 2)", (p >> 8) & 0xFF, 170, "bg g");
+#else
 	CHECK_EQ("ice off: bg is dim green (palette 2)", (p >> 8) & 0xFF, 224, "bg g");
+#endif
 	tctx_free(&t);
 
 	tctx_t t2;
@@ -1972,6 +2009,7 @@ int main(void)
 	test_sgr_attrs();
 	test_charset_line_drawing();
 	test_rep_and_wide();
+	test_utf8_split_boundary();
 	test_combining_chars();
 	test_reset();
 	test_scrollback();

@@ -11,9 +11,13 @@ target("libvterm")
     set_languages("c99")
     add_includedirs("libvterm/include", "libvterm/src")
     add_files("libvterm/src/*.c")
-    -- ANSI.SYS wrap semantics (immediate wrap at the right margin, CUF
-    -- clamp) for BBS-era art; remove to get strict xterm behaviour
-    add_defines("VTERM_ANSI_SYS_WRAP")
+    -- ANSI.SYS semantics for BBS-era art: immediate wrap at the right
+    -- margin, CUF clamp, ED 2 homes the cursor. Remove for strict
+    -- xterm behaviour.
+    add_defines("VTERM_ANSI_SYS_MODE")
+    -- CGA/ANSI.SYS 16-colour palette (brown at SGR 33, 85/255 brights)
+    -- instead of the upstream xterm palette; matches libansilove.
+    add_defines("VTERM_ANSI_SYS_PALETTE")
 
 target("libvterm-test")
     set_kind("binary")
@@ -53,6 +57,10 @@ target("vterm-test")
     add_includedirs("libvterm/include", "tools/vterm")
     add_files("tools/vterm/vterm-test.c", "tools/vterm/term_render.c",
               "tools/vterm/sauce.c", "tools/vterm/cp437.c")
+    -- keep in sync with the libvterm target: the renderer resolves
+    -- palette colours through libvterm, so the expectations below must
+    -- match the compiled palette
+    add_defines("VTERM_ANSI_SYS_MODE", "VTERM_ANSI_SYS_PALETTE")
 
 target("mini-mac-sdl")
     set_kind("binary")

@@ -40,6 +40,10 @@ struct VTermPen
 {
   VTermColor fg;
   VTermColor bg;
+  /* PabloDraw 24-bit (`t`) foreground: SGR 1 (bold) falls back to the
+   * last indexed fg (matches PabloDraw/libansilove; see Ansi.load.cs). */
+  unsigned int fg_from_t:1;
+  VTermColor last_fg16;
   unsigned int bold:1;
   unsigned int underline:2;
   unsigned int italic:1;

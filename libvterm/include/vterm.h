@@ -22,14 +22,18 @@ extern "C" {
  * characters. This number could be changed but will be ABI-incompatible if
  * you do */
 /*
- * Downstream change (esp32-mini-mac): 6 -> 1.
- * The glyph table has zero combining code points (see scripts/count-combining.js),
- * and combining support costs 20 bytes/cell of PSRAM for chars[1..5] that are
- * never used. 1 shrinks ScreenCell 36B -> 16B and the 30x80 screen (2 buffers)
- * from 115KB to 75KB. Trade-off: combining character sequences (e.g. e + U+0301)
- * are dropped instead of joined.
+ * Downstream change (esp32-mini-mac): default is upstream 6; the ESP32
+ * firmware overrides it to 1 via -DVTERM_MAX_CHARS_PER_CELL=1 in
+ * main/CMakeLists.txt: the glyph table has zero combining code points
+ * (see scripts/count-combining.js), and combining support costs 20
+ * bytes/cell of PSRAM for chars[1..5] that are never used. 1 shrinks
+ * ScreenCell 36B -> 16B and the 30x80 screen (2 buffers) from 115KB to
+ * 75KB. Trade-off: combining character sequences (e.g. e + U+0301) are
+ * dropped instead of joined.
  */
-#define VTERM_MAX_CHARS_PER_CELL 1
+#ifndef VTERM_MAX_CHARS_PER_CELL
+#define VTERM_MAX_CHARS_PER_CELL 6
+#endif
 
 typedef struct VTerm VTerm;
 typedef struct VTermState VTermState;

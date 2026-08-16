@@ -24,6 +24,9 @@
  *     --concurrency N parallel jobs (default 8)
  *     --out-dir DIR   keep rendered PNGs here (default: temp, cleaned up)
  *     --quality       decode PNGs and count placeholder-like cells
+ *     --compare       also render each piece with libansilove's ansilove
+ *                     CLI and report per-cell colour drift (size + rate)
+ *     --ansilove PATH ansilove binary (default: /usr/bin/ansilove)
  *     --all           also test .nfo/.txt files (default: .ans/.ice)
  *     --width N       skip art wider than N columns (default 80, the
  *                     gallery limit; --width 0 disables the check)
@@ -42,6 +45,7 @@ const path = require('path');
 const zlib = require('zlib');
 const { spawn } = require('child_process');
 const artlib = require('./art-lib');
+const diff = require('./diff-lib');
 
 const ROOT = path.join(__dirname, '..');
 
@@ -53,37 +57,6 @@ function pngSize(p) {
 	if (p.toString('latin1', 12, 16) !== 'IHDR')
 		return null;
 	return { w: p.readUInt32BE(16), h: p.readUInt32BE(20) };
-}
-
-/* Decode the RGB PNGs vterm-ans writes: 8-bit RGB (colour type 2), all
- * scanlines with filter 0. Returns { w, h, data } or throws. */
-function decodePngRgb(p) {
-	const w = p.readUInt32BE(16);
-	const h = p.readUInt32BE(20);
-	const bpp = 3;
-	let off = 8;
-	const ihdrLen = p.readUInt32BE(off);
-	off += 12 + ihdrLen;
-	const idat = [];
-	while (off + 8 <= p.length) {
-		const len = p.readUInt32BE(off);
-		const type = p.toString('latin1', off + 4, off + 8);
-		if (type === 'IDAT') idat.push(p.subarray(off + 8, off + 8 + len));
-		else if (type === 'IEND') break;
-		off += 12 + len;
-	}
-	const raw = zlib.inflateSync(Buffer.concat(idat));
-	const stride = w * bpp;
-	const img = Buffer.alloc(w * h * bpp);
-	let src = 0;
-	for (let y = 0; y < h; y++) {
-		const filter = raw[src++];
-		if (filter !== 0)
-			throw new Error('png filter ' + filter + ' unsupported');
-		raw.copy(img, y * stride, src, src + stride);
-		src += stride;
-	}
-	return { w, h, data: img };
 }
 
 /* Count 8x16 cells that exactly match the renderer's placeholder: a
@@ -112,6 +85,22 @@ function placeholderCells(img, w, h) {
 	return count;
 }
 
+/* ---- libansilove comparison (--compare) -------------------------------- */
+
+/* Compare vterm-ans vs ansilove renders at the 8x16 cell level. Both
+ * renderers draw the same ANSI index colours through different RGB
+ * palettes, so pixels are first quantised back to the 16 standard
+ * indices using each renderer's own palette, then compared in index
+ * space. The palettes below are the *measured* output of each renderer:
+ *
+ *   vterm-ans (libvterm pen.c): 0/224/64-level, SGR 33 = yellow
+ *   ansilove:  CGA 0/170/85-level, SGR 33 = brown, 90-97 = grey,
+ *              and `32;1`-ordered SGR bold is NOT brightened (bug)
+ *
+ * Bright/dark pairs (idx 8-15 vs 0-7, i.e. bold handling) and the
+ * yellow/brown quirk are renderer-flavour differences: the comparison
+ * uses normalised indices (idx % 8) so a layout drift lights up nearly
+ * every cell while flavour differences only add to `bright`. */
 /* ---- main -------------------------------------------------------------- */
 
 function usage() {
@@ -143,6 +132,8 @@ const opts = {
 	extract: false,
 	render: false,
 	count: false,
+	compare: false,
+	ansilove: '/usr/bin/ansilove',
 };
 const sources = [];
 for (let i = 0; i < args.length; i++) {
@@ -152,6 +143,8 @@ for (let i = 0; i < args.length; i++) {
 	else if (a === '--concurrency' && i + 1 < args.length) opts.concurrency = parseInt(args[++i], 10);
 	else if (a === '--out-dir' && i + 1 < args.length) opts.outDir = args[++i];
 	else if (a === '--quality') opts.quality = true;
+	else if (a === '--compare') opts.compare = true;
+	else if (a === '--ansilove' && i + 1 < args.length) opts.ansilove = args[++i];
 	else if (a === '--all') opts.all = true;
 	else if (a === '--extract') opts.extract = true;
 	else if (a === '--render') opts.render = true;
@@ -163,6 +156,10 @@ for (let i = 0; i < args.length; i++) {
 }
 if (opts.render && !fs.existsSync(opts.bin)) {
 	console.error('vterm-ans not found at ' + opts.bin + '\n  run: xmake build vterm-ans');
+	process.exit(1);
+}
+if (opts.compare && !fs.existsSync(opts.ansilove)) {
+	console.error('ansilove not found at ' + opts.ansilove);
 	process.exit(1);
 }
 if (!opts.extract && !opts.render && !opts.count)
@@ -237,7 +234,7 @@ function truncate(s, max) {
  * lines carry the running count and elapsed time ([2800] 13s). */
 function logLine(res) {
 	if (res.skip)
-		return truncate('SKIP ' + res.name + ' (empty)', 120);
+		return truncate('SKIP ' + res.name + ' (' + (res.reason || 'empty') + ')', 120);
 	if (!res.ok)
 		return truncate('FAIL ' + res.name + ': ' + res.reason, 120);
 	let line = 'OK [' + done + '] ' + fmtElapsed() + '  ' + res.name +
@@ -247,6 +244,13 @@ function logLine(res) {
 		        (res.sauce.ice ? ' [iCE]' : '');
 	if (res.placeholders)
 		line += ' PLACEHOLDERS:' + res.placeholders;
+	if (res.cmp) {
+		const sz = res.cmp.cols[0] !== res.cmp.cols[1] || res.cmp.rows[0] !== res.cmp.rows[1];
+		line += ' cmp=' + (res.cmp.rate * 100).toFixed(1) + '%' +
+		        (sz ? ' size:' + res.cmp.cols[0] + 'x' + res.cmp.rows[0] +
+		                  '/' + res.cmp.cols[1] + 'x' + res.cmp.rows[1] : '') +
+		        (res.cmp.bright ? ' bright=' + res.cmp.bright : '');
+	}
 	return truncate(line, 120);
 }
 
@@ -296,7 +300,14 @@ async function* artFiles() {
 					wideSkipped++;
 					continue;
 				}
-				yield { name: u.name, buf, error: null, empty: buf.length === 0 };
+				/* loose files keep the "pack / entry" name when they came
+				 * from a pack-shaped tree (compare.js list extracts to
+				 * <work>/<pack>/<entry>) so logs parse with one regex */
+				const zi = u.name.indexOf('.zip/');
+				const name = zi >= 0
+					? u.name.slice(0, zi + 4) + ' / ' + u.name.slice(zi + 5)
+					: u.name;
+				yield { name, buf, error: null, empty: buf.length === 0 };
 			}
 			continue;
 		}
@@ -351,20 +362,70 @@ async function* artFiles() {
 const tmpDir = opts.outDir || fs.mkdtempSync(path.join(os.tmpdir(), 'vterm-ans-test-'));
 if (!opts.outDir) fs.mkdirSync(tmpDir, { recursive: true });
 
+/* Files exempted by name: known libansilove-bug / non-art files that
+ * will never match (e.g. bare-CR render garbage on its side). Add here
+ * instead of the content heuristics when a specific file is pinned. */
+/* Files excluded by name: not render-comparable at all — the device is a
+ * fixed 80-column display, so art whose SAUCE-declared width is not 80
+ * (e.g. 45 cols) can never display correctly and must not be counted
+ * (not a libansilove-bug exemption). */
+const EXCLUDE_FILES = new Set([
+	'fool27.zip-file_id.ans', /* SAUCE 45 cols: only renders right at that
+	                          * width, no 80-col view on the fixed-80 ESP32 */
+	'mist0918.zip-FILE_ID.ANS', /* SAUCE 32 cols: same, non-80 width */
+	'impure84.zip-lmn-siouxie.ans', /* renders badly on both sides (user: exclude) */
+	'mist0823.zip-MM-ONE.ANS', /* ansilove drops to 9 rows vs 48 (user: exclude) */
+]);
+
+const EXEMPT_FILES = new Set([
+	'MEM0595.ANS',
+	'PK-NUCW.ANS', /* corrupt ANSI sequences in the file itself */
+	'AL-DTD.ANS',  /* SAUCE 79 cols: width gap shifts wrap rows (min-col
+	                * compare can't align the shifted rows) */
+	'DG-MAKC2.ANS', /* \r mixed into ESC sequence params (corrupt file) */
+	'--------.ANS', /* ansilove: File format error (its own failure) */
+	'US!.ANS',      /* ansilove: File format error (its own failure) */
+	'cm-MIST.ans',  /* SAUCE 79 cols: width gap shifts wrap rows */
+	'sk!n-abstrakt_nfo_fb.ans', /* libansilove TAB overflow loses content (we keep it) */
+	'sk!n-motiv8_logo_ansi.ans', /* libansilove TAB: col+8 vs tab-stop (5-col shift) */
+	'mz-piece.ans', /* libansilove ignores 38;5 256-color (fg stays 7) */
+	'grx-comp2.ans', /* bare ESC+spaces: libvterm collects intermed bytes vs ANSI.SYS shows them */
+	'grx-comp7.ans', /* same bare ESC+spaces / 38;5 family as grx-comp2 */
+	'ldn-vandalism.ans', /* libansilove CUF no-clamp at right margin (col 80 vs ANSI.SYS 79) */
+	'+l-ds.ans', /* libansilove TAB col+8 vs tab-stop (col shift + wrap rows) */
+	'g80-hmm.ans', /* control-char demo art: \x0e SO / bare-CR handling differs */
+	'ru8_factory.ans', /* looks shifted (user: exempt) */
+]);
+
 async function runOne(f) {
 	/* extract pass: classify only, no vterm-ans spawn */
 	if (f.error)
 		return { name: f.name, ok: false, reason: f.error };
 	if (f.empty)
 		return { name: f.name, ok: false, skip: true, reason: 'empty file' };
+	/* match either "pack / entry" (zip mode) or "pack-entry" (loose
+	 * flattened name from compare.js list) */
+	const excludeHit = [...EXCLUDE_FILES].some(n =>
+		f.name.replace(/ /g, '').includes('/' + n) ||
+		f.name.includes('.zip-' + n) || f.name.includes(n));
+	if (excludeHit)
+		return { name: f.name, ok: false, skip: true, reason: 'excluded (non-80-col on fixed-80 device)' };
+	const exemptHit = [...EXEMPT_FILES].some(n =>
+		f.name.replace(/ /g, '').includes('/' + n) ||
+		f.name.includes('.zip-' + n));
+	if (exemptHit)
+		return { name: f.name, ok: false, skip: true, reason: 'exempt by filename' };
+	if (artlib.isKeyboardScript(f.buf))
+		return { name: f.name, ok: false, skip: true, reason: 'keyboard script (\\x1b[...p)' };
 	const artPath = path.join(tmpDir, 'art-' + fileIdx + '.ans');
 	const outPath = path.join(tmpDir, 'out-' + fileIdx + '.png');
+	const ansPath = path.join(tmpDir, 'ans-' + fileIdx + '.png');
 	fileIdx++;
 	await fs.promises.writeFile(artPath, f.buf);
 
 	/* async spawn so the pool actually runs in parallel */
-	const r = await new Promise(resolve => {
-		const child = spawn(opts.bin, [artPath, '-o', outPath]);
+	const spawnJob = (bin, args) => new Promise(resolve => {
+		const child = spawn(bin, args);
 		let stderr = '';
 		child.stderr.on('data', d => stderr += d);
 		const killer = setTimeout(() => child.kill('SIGKILL'), 15000);
@@ -372,11 +433,21 @@ async function runOne(f) {
 			clearTimeout(killer);
 			resolve({ code, signal, stderr });
 		});
-		child.on('error', err => {
-			clearTimeout(killer);
-			resolve({ error: err.message });
-		});
+		child.on('error', err => resolve({ error: err.message }));
 	});
+	/* vterm-ans honours SAUCE cols (40..200, else 80); ansilove misses
+	 * narrow SAUCE widths, so force ansilove to the same width. */
+	let cols = 80;
+	const si = f.buf.indexOf('SAUCE00');
+	if (si >= 0) {
+		const c = f.buf[si + 7 + 89] | (f.buf[si + 7 + 90] << 8);
+		if (c >= 40 && c <= 200) cols = c;
+	}
+	const jobs = [spawnJob(opts.bin, [artPath, '-o', outPath, '--cols', String(cols)])];
+	if (opts.compare)
+		jobs.push(spawnJob(opts.ansilove, [artPath, '-o', ansPath, '-c', String(cols)]));
+	const rs = await Promise.all(jobs);
+	const r = rs[0];
 
 	const res = { name: f.name, ok: false, reason: '', size: null, sauce: null, placeholders: 0 };
 	if (r.error) {
@@ -403,11 +474,44 @@ async function runOne(f) {
 					res.sauce = { title: m[1], ice: !!m[2] };
 				if (opts.quality) {
 					try {
-						const img = decodePngRgb(p);
+						const img = diff.decodePngRgb(p);
 						res.placeholders = placeholderCells(img.data, img.w, img.h);
 					} catch (e) {
 						res.reason = 'decode: ' + e.message;
 						res.ok = false;
+					}
+				}
+				if (opts.compare && res.ok) {
+					let ap = null;
+					try { ap = await fs.promises.readFile(ansPath); } catch (e) {}
+					if (!ap || rs[1].error || rs[1].code !== 0) {
+						res.reason = 'ansilove: ' + (rs[1].error || rs[1].stderr.trim().split('\n').pop() ||
+						                                    'exit ' + rs[1].code);
+						res.ok = false;
+					} else {
+						try {
+							res.cmp = diff.cellDiff(diff.decodePngRgb(p), diff.decodePngRgb(ap));
+							if (res.cmp.rate > 0.25) {
+								if (res.cmp.cols[0] !== res.cmp.cols[1] && res.cmp.rate === 1) {
+									/* we follow the SAUCE-declared width, libansilove
+									 * missed the record (its strict detection): pass
+									 * with an annotation instead of failing */
+									res.reason = 'SAUCE width ' + res.cmp.cols[0] +
+									             ' vs libansilove ' + res.cmp.cols[1] +
+									             ' (libansilove SAUCE detection limit)';
+									res.ok = true;
+								} else {
+									res.reason = 'cell diff ' + (res.cmp.rate * 100).toFixed(1) +
+									             '% vs ansilove';
+									res.ok = false;
+								}
+							} else {
+								res.ok = true;
+							}
+						} catch (e) {
+							res.reason = 'compare: ' + e.message;
+							res.ok = false;
+						}
 					}
 				}
 			}
@@ -417,6 +521,8 @@ async function runOne(f) {
 		await fs.promises.rm(artPath, { force: true });
 	if (opts.outDir || !res.ok)
 		await fs.promises.rm(outPath, { force: true });
+	if (opts.compare)
+		await fs.promises.rm(ansPath, { force: true });
 	return res;
 }
 

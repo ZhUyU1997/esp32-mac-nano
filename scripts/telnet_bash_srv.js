@@ -27,8 +27,13 @@
  *   and unzipped in memory with Node's zlib — no external tools), convert
  *   CP437 .ans/.ice to UTF-8 with an embedded table, strip SAUCE/COMNT
  *   records, skip pieces wider than 80 cols (they would wrap on the
- *   vterm), and cycle through them: the first piece is sent on connect,
- *   Enter from the client switches to the next one.
+ *   vterm), and cycle through them: the first piece is sent on connect.
+ *   Gallery keys (the vterm sends arrow keys as ESC [ A-D):
+ *     right/left — next/previous piece (ANS)
+ *     up/down    — jump to the next/previous year (zip pack <year>/ prefix)
+ *     any arrow  — leaves autoplay (--auto); Enter or space toggles
+ *                  autoplay off/on (or, without --auto, Enter cycles to
+ *                  the next piece).
  *
  * --file test mode: send ONE converted file on connect; Enter re-sends it
  *   (edit the file, press Enter to re-check on the vterm). No gallery
@@ -129,7 +134,9 @@ function makePattern(kind) {
 }
 
 function fillScreen(row0) {
-	let out = '\x1b[2J\x1b[H';
+	/* 3J also clears the scrollback so scrolled-up views never show
+	 * stale content from an earlier screen */
+	let out = '\x1b[2J\x1b[3J\x1b[H';
 	for (let row = 0; row < 30; row++) {
 		let line = '';
 		for (let col = 0; col < 80; col++)
@@ -236,7 +243,7 @@ const server = net.createServer((sock) => {
 				clearInterval(streamTimer);
 				streamTimer = null;
 			}
-			sock.write('\x1b[2J\x1b[H');
+			sock.write('\x1b[2J\x1b[3J\x1b[H');
 			streamTimer = writePaced(sock, filePiece.buf, baudRate);
 		};
 		send();
@@ -311,6 +318,48 @@ const server = net.createServer((sock) => {
 		};
 		let streamTimer = null; /* paced-send interval (--baud), aborted on switch */
 		let autoTimer = null;  /* autoplay countdown (--auto) */
+		/* autoplay engaged; manual navigation (arrow keys) leaves it, Enter
+		 * re-activates it */
+		let autoActive = autoSec > 0;
+		/* years of the zip packs, ascending; single files have no year */
+		const years = [...new Set(artUnits.map(u => u.year).filter(y => y !== null))]
+			.sort((a, b) => +a - +b);
+		const pauseAuto = () => {
+			if (!autoActive)
+				return;
+			autoActive = false;
+			if (autoTimer) {
+				clearTimeout(autoTimer);
+				autoTimer = null;
+			}
+			console.log('art: autoplay off (manual)')
+		};
+		const resumeAuto = () => {
+			if (autoSec <= 0)
+				return;
+			if (!autoActive)
+				console.log('art: autoplay on');
+			autoActive = true;
+			/* restart the countdown from the current piece; if it is still
+			 * streaming, show()'s completion callback registers the timer */
+			if (autoTimer) {
+				clearTimeout(autoTimer);
+				autoTimer = null;
+			}
+			if (!streamTimer)
+				autoTimer = setTimeout(next, autoSec * 1000);
+		};
+		/* Enter/space flips between paused and autoplay; false when the
+		 * session has no --auto at all */
+		const toggleAuto = () => {
+			if (autoSec <= 0)
+				return false;
+			if (autoActive)
+				pauseAuto();
+			else
+				resumeAuto();
+			return true;
+		};
 		const show = () => {
 			if (!seekPiece()) {
 				console.log('art: no displayable pieces');
@@ -331,11 +380,14 @@ const server = net.createServer((sock) => {
 				clearTimeout(autoTimer);
 				autoTimer = null;
 			}
-			sock.write('\x1b[2J\x1b[H');
+			/* 3J clears the scrollback too: switching pieces must not leave
+			 * the previous piece's scrolled-out rows behind (the vterm view
+			 * reads them back on scroll-up, mixing old and new content) */
+			sock.write('\x1b[2J\x1b[3J\x1b[H');
 			streamTimer = writePaced(sock, p.buf, baudRate, () => {
 				streamTimer = null;
 				/* autoplay starts counting once the piece has fully streamed */
-				if (autoSec > 0)
+				if (autoSec > 0 && autoActive)
 					autoTimer = setTimeout(next, autoSec * 1000);
 			});
 		};
@@ -347,13 +399,63 @@ const server = net.createServer((sock) => {
 			}
 			show();
 		};
+		/* previous piece: step back, borrowing the last piece of the
+		 * previous unit when the current one runs out */
+		const prev = () => {
+			pi--;
+			for (let g = 0; g < nUnits; g++) {
+				if (pi >= 0 && unitPieces(artUnits[ui]).length > 0)
+					break; /* still inside the current unit */
+				ui = (ui - 1 + nUnits) % nUnits;
+				pi = unitPieces(artUnits[ui]).length - 1;
+			}
+			show();
+		};
+		/* jump to the first displayable unit of the neighbouring year; a
+		 * unit without a year (single file) is not navigable by year */
+		const jumpYear = (dir) => {
+			const yi = years.indexOf(artUnits[ui].year);
+			if (yi < 0)
+				return;
+			const target = years[(yi + dir + years.length) % years.length];
+			for (let g = 0; g < nUnits; g++) {
+				ui = (ui + 1) % nUnits;
+				if (artUnits[ui].year === target && unitPieces(artUnits[ui]).length > 0) {
+					pi = 0;
+					show();
+					return;
+				}
+			}
+		};
 		show();
 		sock.on('data', (d) => {
 			const s = d.toString('latin1');
-			/* Enter from the client (the vterm sends CR) cycles to the
-			 * next piece; any other keys are ignored */
-			if (s.indexOf('\r') >= 0 || s.indexOf('\n') >= 0)
-				next();
+			/* arrow keys navigate the gallery (right/left = next/prev
+			 * piece, up/down = next/prev year) and leave autoplay; Enter
+			 * or space toggles autoplay off/on (without --auto, Enter
+			 * cycles to the next piece) */
+			let i = 0;
+			while (i < s.length) {
+				if (s[i] === '\x1b' && i + 2 < s.length && s[i + 1] === '[' &&
+				    'ABCD'.indexOf(s[i + 2]) >= 0) {
+					switch (s[i + 2]) {
+					case 'A': pauseAuto(); jumpYear(-1); break; /* up */
+					case 'B': pauseAuto(); jumpYear(1); break;  /* down */
+					case 'C': pauseAuto(); next(); break;       /* right */
+					case 'D': pauseAuto(); prev(); break;       /* left */
+					}
+					i += 3;
+				} else if (s[i] === '\r' || s[i] === '\n') {
+					if (!toggleAuto())
+						next(); /* no --auto: old Enter-advance behaviour */
+					i++;
+				} else if (s[i] === ' ') {
+					toggleAuto();
+					i++;
+				} else {
+					i++;
+				}
+			}
 		});
 		sock.on('close', () => {});
 		sock.on('error', () => {});
