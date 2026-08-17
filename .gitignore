@@ -50,4 +50,5 @@ build/
 compare.png
 art-compare*.log
 art-full.out
-art-diff
+art-diff4db-mode.png
+4db-nomode.png
