@@ -516,3 +516,30 @@ __MACOSX/._*（AppleDouble 垃圾 ×7）、`? ?`（无效条目）、CREONIX（b
 
 **验证结论**：豁免后全量 0 渲染差；vterm 行为经四基准（ANSI.SYS/xterm/
 PabloDraw/libansilove）逐族核对，均为 ansilove 侧缺陷。
+
+### 9.34 4db.ANS：满列 + CRLF 双换行（wrap 语义）
+
+1997 FullMoon/Miracle/IBM/4db.ans（1oo-moon.zip，5464 B，80x25 连续
+CRLF 无跳行）。渲染 32 行画布出现 **6 个中间空行**（r9/r16/r18/r20/r26/
+r28），vscode/xterm 无空行。
+
+**定位**：非空行 bug——是**满列 wrap 语义**差异（text 25 行全有内容，
+空行 = 某行写满 80 列后换行推进异常）。
+
+| 环境 | 满列行为 | CRLF 后 | 4db.ans |
+|---|---|---|---|
+| ANSI.SYS（MS-DOS 4.0 ANSI.ASM L450-465）| 写满 col=80>79 **立即**换行（无 phantom）| CR col=0 + LF row++ = **2 行** | 空行 |
+| DOS 6 实测（DEBUG 造 80A+CRLF+X）| — | X 在第 3 行 | 空行 ✓ |
+| xterm（DEC wrap-pending，VT100 起未变）| 行尾暂存 pending | CR 取消 pending + LF = **1 行** | 无空行 |
+| libvterm `VTERM_ANSI_SYS_MODE` | 立即换行（state.c L463-467）| 2 行 | 空行（同 ANSI.SYS ✓）|
+| libvterm 无 MODE | at_phantom=1（L474）| 实测 **1 行**（X 落 r1，最小复现 /tmp/wrap-min.ans）| 无空行（同 xterm ✓）|
+
+**结论**：两种渲染模型都与各自原型终端一致（MODE=ANSI.SYS 空行、
+无 MODE=xterm 无空行）。**设计意图**：作者在 80 列画布连续画行，
+无空行才是想要的画面（xterm 语义正确）。97 年场景（DOS/ANSI.SYS）
+无 xterm，作者所见即空行版。
+
+**决策**：未定。对齐 xterm 需 MODE 下也改满列行为（当前 MODE 立即
+wrap 是刻意复刻 ANSI.SYS）；4db.ans 与 ansilove 0 diff（ansilove 同
+样双推进），无 MODE 版 42.3% diff（812/1920，LF 不回行首/SGR 7 等
+叠加）。图：4db-mode.png / 4db-nomode.png（项目根）。
