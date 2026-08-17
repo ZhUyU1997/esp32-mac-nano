@@ -1,7 +1,7 @@
 # ANSI art 批量测试：发现的问题与修复记录
 
 背景：为 `tools/vterm` 实现 libansilove 风格的 ANSI art 转换（`vterm-ans`），
-并编写批量测试脚本 `scripts/test-art.js` 全量验证 `scripts/art/packs`
+并编写批量测试脚本 `tools/art/test-art.js` 全量验证 `scripts/art/packs`
 素材库（**5511 个 zip、65543 个 art 文件**）。测试过程中发现并修复了
 一批渲染、解析和检测逻辑的 bug，本文档汇总全部问题、根因与修复方式。
 
@@ -14,8 +14,8 @@
 | `tools/vterm/cp437.c/.h` | CP437 字节 → Unicode + UTF-8 喂入 |
 | `tools/vterm/term_render.c/.h` | 渲染器（iCE 模式、CP437 全量映射）|
 | `libvterm/src/parser.c` | vendored libvterm（CSI 参数溢出修复）|
-| `scripts/test-art.js` | 批量测试（流水线：边解压边验证）|
-| `scripts/art-lib.js` | 共享 art 遍历/检测库（画廊与测试同源）|
+| `tools/art/test-art.js` | 批量测试（流水线：边解压边验证）|
+| `tools/art/art-lib.js` | 共享 art 遍历/检测库（画廊与测试同源）|
 
 ---
 
@@ -80,7 +80,7 @@
 
 ---
 
-## 2. 测试脚本 bug（scripts/test-art.js）
+## 2. 测试脚本 bug（tools/art/test-art.js）
 
 | # | 问题 | 影响 | 修复 |
 |---|---|---|---|
@@ -103,7 +103,7 @@ ANSI art 用"光标定位 + 分段书写"（`\x1b[41C` 跳列、`ESC[s/u` 保存
 | **光标模拟**（CUP/CUF/CUB/保存恢复，跟踪每行最右列）| **13219** | 正确（SAUCE 声明 858 + 模拟 12361）|
 
 - **判定优先级**：SAUCE 声明列数（作者权威）→ 无 SAUCE 用光标模拟。
-- **落地**：统一抽到 `scripts/art-lib.js` 的 `fileWidth()`，画廊与测试脚本
+- **落地**：统一抽到 `tools/art/art-lib.js` 的 `fileWidth()`，画廊与测试脚本
   同源；顺带修复 `convertPiece` 先转码后算宽导致 UTF-8 多字节翻倍、telnet
   `--file` 宽文件空指针崩溃（改优雅退出）。
 
@@ -178,7 +178,7 @@ total art files: 65543（5511 个 zip）
 
 ## 7. 素材修复（unzip-packs.js）
 
-`scripts/unzip-packs.sh` 改为 JS（`scripts/unzip-packs.js`），解压后自动修复：
+`scripts/unzip-packs.sh` 改为 JS（`tools/art/unzip-packs.js`），解压后自动修复：
 
 - **mega zip 是 ZIP64**（9.08 GB，条目偏移在 extra 字段）——脚本流式读
   尾部 EOCD/中央目录，按条目提取，不全读内存；
@@ -269,8 +269,8 @@ total art files: 65543（5511 个 zip）
 |---|---|
 | `vterm-ans --cell R,C` | 反向逆推：cell → 源文件字节偏移（一次进程）|
 | `vterm-ans --trace-cells FILE` | 全量 cell→字节偏移映射 |
-| `scripts/cell2byte.js` | 基于 trace 查表 |
-| `scripts/ddmin.js` | 自动最小化复现（目标锁定 + 补全截断检查）|
+| `tools/art/cell2byte.js` | 基于 trace 查表 |
+| `tools/art/ddmin.js` | 自动最小化复现（目标锁定 + 补全截断检查）|
 
 方法论（定位 → 理解 → 验证 → 行为合理性考察）见
 `docs/art-testing-workflow.md`。用户判断唯一标准是 diff 图

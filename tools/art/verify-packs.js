@@ -1,14 +1,14 @@
 #!/usr/bin/env node
 /* 核对 16colo.rs 合集解压完整性：对比 mega zip 中央目录里的 .zip 条目
  * 与目标目录的实际文件（支持 ZIP64）。用法:
- *   node scripts/verify-packs.js [mega.zip] [目录]
+ *   node tools/art/verify-packs.js [mega.zip] [目录]
  * 默认: ~/16colo-packs.zip  vs  scripts/art/packs
  */
 const fs = require('fs');
 const path = require('path');
 
 const zipPath = process.argv[2] || path.join(process.env.HOME, '16colo-packs.zip');
-const destDir = process.argv[3] || path.join(__dirname, 'art', 'packs');
+const destDir = process.argv[3] || path.join(__dirname, '..', '..', 'scripts', 'art', 'packs');
 
 /* 读取 ZIP64-aware 的中央目录 */
 function readCentralDir(zipPath) {

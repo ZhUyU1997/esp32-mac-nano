@@ -2,10 +2,10 @@
 /* Telnet-bash server with a real pty (full interactive bash).
  *
  * Usage:
- *   node telnet_bash_srv.js [port]                    interactive bash (default)
- *   node telnet_bash_srv.js [port] --test [pattern]   fixed-output benchmark
- *   node telnet_bash_srv.js [port] --art <dir|file>   ASCII-art gallery
- *   node telnet_bash_srv.js [port] --file <file>      single-file test mode
+ *   node tools/art/telnet_srv.js [port]                    interactive bash (default)
+ *   node tools/art/telnet_srv.js [port] --test [pattern]   fixed-output benchmark
+ *   node tools/art/telnet_srv.js [port] --art <dir|file>   ASCII-art gallery
+ *   node tools/art/telnet_srv.js [port] --file <file>      single-file test mode
  *        (gallery options: --baud <rate> 90s dial-up pacing,
  *         --auto <sec> autoplay — advance after N s once streamed)
  *        (repeatable: merge several packs)
@@ -44,7 +44,7 @@
 const net = require('net');
 const path = require('path');
 const pty = require('node-pty');
-const artlib = require('./art-lib');
+const artlib = require('./lib/art-lib');
 const fs = require('fs');
 
 const args = process.argv.slice(2);

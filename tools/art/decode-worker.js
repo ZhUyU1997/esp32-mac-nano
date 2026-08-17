@@ -3,7 +3,7 @@
  * main event loop of the test-art worker pool. */
 'use strict';
 const { parentPort } = require('worker_threads');
-const diff = require('./diff-lib');
+const diff = require('./lib/diff-lib');
 
 parentPort.on('message', async (m) => {
 	try {

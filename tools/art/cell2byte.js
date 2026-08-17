@@ -4,8 +4,8 @@
  * so the mapping is exactly what vterm-ans renders).
  *
  * Usage:
- *   node scripts/cell2byte.js <pack.zip> <entry> <row> <col> [row col ...]
- *   node scripts/cell2byte.js <file.ans> <row> <col>
+ *   node tools/art/cell2byte.js <pack.zip> <entry> <row> <col> [row col ...]
+ *   node tools/art/cell2byte.js <file.ans> <row> <col>
  *
  * Prints: r<row>c<col> -> byte <off> + the source context around it.
  */
@@ -15,10 +15,9 @@ const os = require('os');
 const path = require('path');
 const zlib = require('zlib');
 const { spawnSync } = require('child_process');
-const artlib = require('./art-lib');
-
-const ROOT = path.join(__dirname, '..');
-const VTERM = path.join(ROOT, 'build/linux/x86_64/release/vterm-ans');
+const artlib = require('./lib/art-lib');
+const { VTERM } = require('./lib/config');
+const { traceCells } = require('./lib/render');
 
 const argv = process.argv.slice(2);
 if (argv.length < 3) {
@@ -50,8 +49,7 @@ const work = fs.mkdtempSync(path.join(os.tmpdir(), 'cell2byte-'));
 const ansPath = path.join(work, 'a.ans');
 const tracePath = path.join(work, 'trace.txt');
 fs.writeFileSync(ansPath, buf);
-const r = spawnSync(VTERM, [ansPath, '--trace-cells', tracePath],
-                    { encoding: 'utf8' });
+const r = traceCells(ansPath, tracePath, 80);
 if (r.status !== 0) {
 	console.error('vterm-ans: ' + (r.stderr || '').trim());
 	process.exit(1);

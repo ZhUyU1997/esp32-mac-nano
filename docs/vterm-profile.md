@@ -3,7 +3,7 @@
 ## 环境与测量方法
 
 - 硬件：ESP32-S3 + ST7701S（480×640 RGB 面板，PSRAM framebuffer，RGB222 数据总线）
-- 负载：`scripts/telnet_bash_srv.js 2324 --test fill` 每 500ms 灌一屏 80×30 文本
+- 负载：`tools/art/telnet_srv.js 2324 --test fill` 每 500ms 灌一屏 80×30 文本
 - 采样：`VTERM_PROFILE` 每秒打一行 `prof: render N/s avgXus | blit N/s | dmg N ev avg M cells`
 - 每个实验 build + flash + 读 prof，结果记录在本文件
 

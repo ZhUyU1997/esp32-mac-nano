@@ -6,7 +6,7 @@
  * diff disappears, then backs off to the smallest window that keeps it.
  *
  * Usage:
- *   node scripts/ddmin.js <pack.zip> <entry> [--window N] [--max-rounds N]
+ *   node tools/art/ddmin.js <pack.zip> <entry> [--window N] [--max-rounds N]
  *
  * Output: the minimal source slice (bytes + readable sequence) that still
  * reproduces the diff, saved to art-diff/ddmin-<entry>.ans and printed.
@@ -17,12 +17,10 @@ const os = require('os');
 const path = require('path');
 const zlib = require('zlib');
 const { spawnSync } = require('child_process');
-const artlib = require('./art-lib');
-const diff = require('./diff-lib');
-
-const ROOT = path.join(__dirname, '..');
-const VTERM = path.join(ROOT, 'build/linux/x86_64/release/vterm-ans');
-const ANSILOVE = '/usr/bin/ansilove';
+const artlib = require('./lib/art-lib');
+const diff = require('./lib/diff-lib');
+const { ROOT, PACKS, VTERM, ANSILOVE } = require('./lib/config');
+const { renderBoth, traceCells } = require('./lib/render');
 
 const argv = process.argv.slice(2);
 if (argv.length < 2) {
@@ -38,7 +36,7 @@ for (let i = 2; i < argv.length; i++) {
 	if (argv[i] === '--max-rounds' && i + 1 < argv.length) MAX_ROUNDS = parseInt(argv[++i], 10);
 }
 
-const packBuf = fs.readFileSync(path.join(ROOT, 'scripts/art/packs', pack));
+const packBuf = fs.readFileSync(path.join(PACKS, pack));
 const e = artlib.parseZip(packBuf).find(x => x.name === entry ||
                                              x.name.endsWith('/' + entry));
 if (!e) { console.error('entry not found'); process.exit(1); }
@@ -70,11 +68,10 @@ const cells = diffCells(full);
 console.log('diff cells: ' + cells.map(([r, c]) => 'r' + r + 'c' + c).join(' '));
 
 /* 2. map cells to byte offsets via --trace-cells */
-const tPath = work + '/t.txt';
+const tPath = traceCells(work + '/f.ans', work + '/t.txt', 80).status !== 0 ? '' : work + '/t.txt';
 fs.writeFileSync(work + '/f.ans', buf);
-spawnSync(VTERM, [work + '/f.ans', '--trace-cells', tPath]);
 const map = new Map();
-for (const line of fs.readFileSync(tPath, 'utf8').split('\n')) {
+if (tPath) for (const line of fs.readFileSync(tPath, 'utf8').split('\n')) {
 	const m = line.match(/^(\d+),(\d+),(\d+)$/);
 	if (m) map.set(m[1] + ',' + m[2], parseInt(m[3], 10));
 }

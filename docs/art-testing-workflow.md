@@ -10,22 +10,22 @@
 | `vterm-ans` | ANSI art → PNG（渲染器）|
 | `vterm-ans --cell R,C` | **反向逆推**：cell → 源文件字节偏移（一次进程内，推荐）|
 | `vterm-ans --trace-cells FILE` | 全量 cell→字节偏移映射表 |
-| `scripts/test-art.js --compare` | 批量对比（vs ansilove），逐文件 rate + 豁免 |
-| `scripts/compare.js one` | 单文件对比 → `compare.png`（三列：ansilove \| vterm-ans \| diff map）|
-| `scripts/compare.js list` | 按 `list.txt` 批量跑（→ test-art.js）|
-| `scripts/cell2byte.js` | 基于 trace 查表：pack entry row col → 字节偏移 + 上下文 |
-| `scripts/ddmin.js` | 自动最小化复现序列（delta debugging）|
-| `scripts/diff-lib.js` | 共享 diff 实现（test-art 与 compare one 同源）|
-| `scripts/art-lib.js` | 共享工具（zip、SAUCE、键盘脚本检测）|
+| `tools/art/test-art.js --compare` | 批量对比（vs ansilove），逐文件 rate + 豁免 |
+| `tools/art/compare.js one` | 单文件对比 → `compare.png`（三列：ansilove \| vterm-ans \| diff map）|
+| `tools/art/compare.js list` | 按 `list.txt` 批量跑（→ test-art.js）|
+| `tools/art/cell2byte.js` | 基于 trace 查表：pack entry row col → 字节偏移 + 上下文 |
+| `tools/art/ddmin.js` | 自动最小化复现序列（delta debugging）|
+| `tools/art/diff-lib.js` | 共享 diff 实现（test-art 与 compare one 同源）|
+| `tools/art/art-lib.js` | 共享工具（zip、SAUCE、键盘脚本检测）|
 
 图固定输出：`art-diff/latest.png`（最新对比图，每次分析自动更新）。
 
 ## 标准工作流
 
 ```
-1. 批量跑      node scripts/compare.js list > compare-output.txt
+1. 批量跑      node tools/art/compare.js list > compare-output.txt
 2. 提取 FAIL   → list.txt（pack/entry）
-3. 单个检查    node scripts/compare.js one <pack> <entry>  → art-diff/latest.png
+3. 单个检查    node tools/art/compare.js one <pack> <entry>  → art-diff/latest.png
 4. 用户看图    判断差异类型（偏移/颜色/缺失/乱码）
 5. 定位        vterm-ans --cell R,C → 源文件字节偏移（见下）
 6. 理解+验证   读字节上下文 + 查参考源码 + 最小对照实验（见下）

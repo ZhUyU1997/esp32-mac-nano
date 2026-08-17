@@ -3,13 +3,13 @@
  * compare.js — ANSI art 对比工具（合并自 compare-one.js / compare-list.js）。
  *
  * 子命令:
- *   node scripts/compare.js one                渲染第一个 FAIL（/tmp/art-compare.log）
- *   node scripts/compare.js one pack entry     如 1993/acdu0193.zip TDT-CE1.ANS
- *   node scripts/compare.js one file.ans       松散文件
- *   node scripts/compare.js one --cut N ...    只取前 N 字节（二分定位）
+ *   node tools/art/compare.js one                渲染第一个 FAIL（/tmp/art-compare.log）
+ *   node tools/art/compare.js one pack entry     如 1993/acdu0193.zip TDT-CE1.ANS
+ *   node tools/art/compare.js one file.ans       松散文件
+ *   node tools/art/compare.js one --cut N ...    只取前 N 字节（二分定位）
  *     输出: <project-root>/compare.png（50% 三列：ansilove | vterm-ans | diff map）
  *
- *   node scripts/compare.js list [list.txt] [--limit N] [--concurrency N]
+ *   node tools/art/compare.js list [list.txt] [--limit N] [--concurrency N]
  *     按 list.txt（pack/entry 每行）批量跑 test-art.js --compare；
  *     坏 CRC / 缺条目跳过，结果日志留在临时目录。
  */
@@ -20,13 +20,11 @@ const os = require('os');
 const path = require('path');
 const zlib = require('zlib');
 const { spawnSync } = require('child_process');
-const artlib = require('./art-lib');
-const diff = require('./diff-lib');
+const artlib = require('./lib/art-lib');
+const diff = require('./lib/diff-lib');
+const { ROOT, PACKS, ANSILOVE, VTERM } = require('./lib/config');
+const { sauceCols, renderBoth } = require('./lib/render');
 
-const ROOT = path.join(__dirname, '..');
-const PACKS = path.join(ROOT, 'scripts/art/packs');
-const ANSILOVE = '/usr/bin/ansilove';
-const VTERM = path.join(ROOT, 'build/linux/x86_64/release/vterm-ans');
 const OUT = path.join(ROOT, 'compare.png');
 const LOG = '/tmp/art-compare.log';
 const SCALE = 0.5;
@@ -107,14 +105,8 @@ function cmdOne(argv) {
 		/* vterm-ans honours SAUCE cols (40..200, else 80); ansilove misses
 		 * narrow SAUCE widths, so force ansilove to the same width the
 		 * vterm side will use — otherwise non-80 art compares shifted. */
-		let cols = 80;
-		const si = art.buf.indexOf('SAUCE00');
-		if (si >= 0) {
-			const c = art.buf[si + 7 + 89] | (art.buf[si + 7 + 90] << 8);
-			if (c >= 40 && c <= 200) cols = c;
-		}
-		run(ANSILOVE, [artPath, '-o', ans, '-q', '-c', String(cols)]);
-		const vr = run(VTERM, [artPath, '-o', vtm, '--cols', String(cols)]);
+		const cols = sauceCols(art.buf);
+		const { ansilove, vterm: vr } = renderBoth(artPath, work, cols);
 		if (vr.status !== 0)
 			console.error('vterm-ans stderr: ' + (vr.stderr || '').trim());
 
@@ -130,73 +122,16 @@ function cmdOne(argv) {
 		            '/' + cmp.total + ')' + (cmp.bright ? ' bright=' + cmp.bright : ''));
 		const mapJson = path.join(work, 'map.json');
 		fs.writeFileSync(mapJson, JSON.stringify(cmp.map ? [...cmp.map] : []));
-		const py = `
-import json, sys
-from PIL import Image, ImageDraw
-import numpy as np
-ans = ${JSON.stringify(ans)}
-vtm = ${JSON.stringify(vtm)}
-out = ${JSON.stringify(OUT)}
-map_file = ${JSON.stringify(mapJson)}
-a = Image.open(ans).convert('RGB')
-v = Image.open(vtm).convert('RGB')
-rows_a, rows_v = a.size[1]//16, v.size[1]//16
-cols = a.size[0]//8
-common = max(rows_a, rows_v)  # show full height of both (min would hide overflow)
-minrows = min(rows_a, rows_v)
-# diff map from the node-computed cell map (covers min rows only: the
-# extra rows of the taller renderer are a row-count gap, not per-cell
-# differences, and get a grey marker instead of red)
-flat = np.array(json.load(open(map_file)), dtype=bool)
-cells = np.zeros((common, cols), dtype=bool)
-if flat.size == minrows * cols:
-    cells[:minrows] = flat.reshape(minrows, cols)
-else:
-    # column mismatch or no map: mark everything red as before
-    cells[:minrows] = True
-gap = np.zeros((common, cols), dtype=bool)
-gap[minrows:] = True
-red = np.array([255,60,60], dtype=np.uint8)
-grey = np.array([150,150,150], dtype=np.uint8)
-mark = np.where(cells[:,None,:,None,None], red[None,None,None,None,:], 0)
-mark = np.where(gap[:,None,:,None,None], grey[None,None,None,None,:], mark)
-dmarr = np.broadcast_to(mark, (common, 16, cols, 8, 3)).copy()
-dm = Image.fromarray(dmarr.transpose(0,1,2,3,4).reshape(common*16, cols*8, 3))
-s = ${SCALE}
-ta = a.crop((0, 0, a.size[0], common*16)).resize((int(a.size[0]*s), int(common*16*s)), Image.NEAREST)
-tv = v.crop((0, 0, v.size[0], common*16)).resize((int(v.size[0]*s), int(common*16*s)), Image.NEAREST)
-tdm = dm.resize((int(a.size[0]*s), int(common*16*s)), Image.NEAREST)
-bar = 30
-# full height of the taller renderer: when the rows differ, the shorter
-# column just leaves white space at its bottom (crop of the shorter image
-# returns less than common*16 rows, so base the canvas on the cell map)
-h = int(common*16*s) + 30 + 16  # bottom padding so the last row mark fits
-left_x = bar             # left content column
-right_x = bar + ta.width + 40  # right content column
-dm_x = right_x + ta.width + 40   # diff map column, right after the vterm-ans column
-c = Image.new('RGB', (dm_x + tdm.width, h), (255,255,255))
-d = ImageDraw.Draw(c)
-def rowmarks(d, x, rows):
-    for r in range(0, rows + 5, 5):
-        # centre the 11px label on its 8px row (row top = 24 + r*8)
-        d.text((x, 24 + int(r*16*s) - 1), str(r), fill=(120,120,120))
-# row-number gutter sits left of each content column
-rowmarks(d, left_x - bar + 2, common)
-rowmarks(d, right_x - bar + 2, common)
-d.text((left_x + 4, 4), 'ansilove %dx%d (%d rows)' % (a.size[0], a.size[1], rows_a), fill=(0,0,0))
-d.text((right_x - bar + 4, 4), 'vterm-ans(ANSI.SYS) %dx%d (%d rows)' % (v.size[0], v.size[1], rows_v), fill=(0,0,0))
-d.text((dm_x + 4, 4), 'diff map: %d/%d cells (%.1f%%)' % (${cmp.diff}, ${cmp.total}, ${(cmp.rate*100).toFixed(1)}), fill=(0,0,0))
-c.paste(ta, (left_x, 24))
-c.paste(tv, (right_x, 24))
-c.paste(tdm, (dm_x, 24))
-c.save(out)
-`;
-		const pr = run('python3', ['-c', py]);
-		if (pr.status !== 0)
-			console.error('python3: ' + (pr.stderr || '').trim());
+		require('./diff-image')
+			.renderDiffImage({
+				ansPng: ans, vtmPng: vtm, mapJson, out: OUT,
+				titleMiddle: 'vterm-ans(ANSI.SYS)',
+				diff: cmp.diff, total: cmp.total, rate: cmp.rate,
+				scale: SCALE,
+			})
+			.catch((e) => console.error('diff-image: ' + e.message));
 
 		console.log('file:   ' + art.name + ' (' + art.buf.length + ' B)');
-		console.log(pr.stdout ? pr.stdout.trim() : '');
 		console.log('compare: ' + OUT);
 	} finally {
 		fs.rmSync(work, { recursive: true, force: true });
@@ -258,7 +193,7 @@ function cmdList(argv) {
 
 	const log = path.join(work, 'result.log');
 	const r = spawnSync('node', [
-		path.join(ROOT, 'scripts/test-art.js'),
+		path.join(ROOT, 'tools/art/test-art.js'),
 		'--render', '--compare',
 		'--concurrency', String(concurrency),
 		'--log', log, work,
@@ -279,7 +214,7 @@ function cmdList(argv) {
 
 function usage() {
 	console.error(
-	    'usage: node scripts/compare.js <one|list> [...]\n' +
+	    'usage: node tools/art/compare.js <one|list> [...]\n' +
 	    '  one [pack entry | file.ans] [--cut N] [--log FILE]   single-file compare -> compare.png\n' +
 	    '      --log FILE   FAIL log for the no-arg fallback (default /tmp/art-compare.log)\n' +
 	    '  list [list.txt] [--limit N] [--concurrency N]   batch via test-art.js');

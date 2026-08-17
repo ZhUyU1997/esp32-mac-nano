@@ -1,6 +1,6 @@
 /* art-lib.js — shared ANSI-art traversal and analysis helpers.
  *
- * Used by scripts/telnet_bash_srv.js (the gallery server) and
+ * Used by tools/art/telnet_srv.js (the gallery server) and
  * scripts/test-vterm-ans.js (batch converter tests) so both agree on
  * what counts as an art file and how wide it is:
  *

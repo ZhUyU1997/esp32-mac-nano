@@ -11,10 +11,10 @@
  *      用系统 unzip 解到临时目录（unzip 支持这些老格式），重新打包覆盖。
  *
  * 用法:
- *   node scripts/unzip-packs.js                  # 默认 ~/16colo-packs.zip
- *   node scripts/unzip-packs.js /path/x.zip      # 指定 mega zip
- *   node scripts/unzip-packs.js -n               # 增量：跳过已存在的 pack
- *   node scripts/unzip-packs.js --repair-only    # 不重新解压，只修复现有 packs
+ *   node tools/art/unzip-packs.js                  # 默认 ~/16colo-packs.zip
+ *   node tools/art/unzip-packs.js /path/x.zip      # 指定 mega zip
+ *   node tools/art/unzip-packs.js -n               # 增量：跳过已存在的 pack
+ *   node tools/art/unzip-packs.js --repair-only    # 不重新解压，只修复现有 packs
  */
 'use strict';
 
@@ -23,9 +23,9 @@ const os = require('os');
 const path = require('path');
 const zlib = require('zlib');
 const { execFileSync, spawnSync } = require('child_process');
-const artlib = require('./art-lib');
+const artlib = require('./lib/art-lib');
 
-const DEST = path.join(__dirname, 'art', 'packs');
+const DEST = path.join(__dirname, '..', '..', 'scripts', 'art', 'packs');
 
 /* ---- ZIP64-aware central directory (mirrors verify-packs.js) ----------- */
 
@@ -291,7 +291,7 @@ function repairPack(zipPath) {
 		/* not a parseable zip: stream-recover if it looks like one, else
 		 * move the junk file (0-byte, PHP, ...) out of the packs */
 		if (buf.length < 4 || buf.toString('latin1', 0, 2) !== 'PK') {
-			const quar = path.join(__dirname, 'art', 'quarantine');
+			const quar = path.join(__dirname, '..', '..', 'scripts', 'art', 'quarantine');
 			fs.mkdirSync(quar, { recursive: true });
 			const dest = path.join(quar, path.basename(zipPath));
 			if (!fs.existsSync(dest))

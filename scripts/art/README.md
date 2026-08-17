@@ -1,7 +1,7 @@
 # vterm ASCII-art gallery (16colo.rs packs)
 
 Local collection for the vterm's `--art` gallery mode
-(`scripts/telnet_bash_srv.js`).
+(`scripts/telnet_srv.js`).
 
 ## 目录结构
 
@@ -18,13 +18,13 @@ scripts/art/
 
 ```bash
 # 指向 packs 目录（自动加载里面所有 .zip）
-node scripts/telnet_bash_srv.js 2324 --art scripts/art/packs
+node scripts/telnet_srv.js 2324 --art scripts/art/packs
 
 # 或指定单个 zip
-node scripts/telnet_bash_srv.js 2324 --art scripts/art/packs/acid_a-d.zip
+node scripts/telnet_srv.js 2324 --art scripts/art/packs/acid_a-d.zip
 
 # 多个 pack 合并成一个画廊
-node scripts/telnet_bash_srv.js 2324 --art scripts/art/packs --art /tmp/其他.zip
+node scripts/telnet_srv.js 2324 --art scripts/art/packs --art /tmp/其他.zip
 ```
 
 连接后自动显示第一张，回车切换下一张（循环）。

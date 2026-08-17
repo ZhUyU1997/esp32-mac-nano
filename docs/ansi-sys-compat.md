@@ -125,8 +125,8 @@ IM-EOT1 34.7%→0.7%。
 
 **验证**：IM-EOT1 272→271 行（与 libansilove 一致）。
 
-**排查工具**：`scripts/compare.js one` 输出并排对比图（带行号），
-`scripts/compare.js list` 按 list.txt 批量跑（坏 CRC 自动剔除）。
+**排查工具**：`tools/art/compare.js one` 输出并排对比图（带行号），
+`tools/art/compare.js list` 按 list.txt 批量跑（坏 CRC 自动剔除）。
 
 ## CGA 调色板还原（libvterm pen.c）
 
@@ -386,20 +386,20 @@ TDT-CE1 回归 0.0%；vterm-test 231 passed。
 **修复**：`\x1b[A` 不减 row（宁大勿小——多分配无害，低估才滚动
 丢内容）。验证：LD-COD 28.0% → 0.0%（794=794 行）。
 
-## diff 实现统一（scripts/diff-lib.js）
+## diff 实现统一（tools/art/diff-lib.js）
 
 test-art.js（批量）与 compare.js one（单文件）原先各写一套 diff
 （node 逐 cell vs python），量化表不同步曾导致同一文件 rate 不一致
-（14.9% vs 0.7%）。抽出 `scripts/diff-lib.js` 为唯一实现
+（14.9% vs 0.7%）。抽出 `tools/art/diff-lib.js` 为唯一实现
 （decodePngRgb / nearestIdx / cellTopIdx / cellDiff），两个工具
 require 同一模块；compare one 的 python 只剩 PIL 拼图（diff map
 数据由 node 计算后传 JSON）。
 
 ## 相关工具
 
-- `scripts/test-art.js --compare`：与 libansilove 逐文件对比
+- `tools/art/test-art.js --compare`：与 libansilove 逐文件对比
   （索引空间量化 + 归一化 + 严格 1:1 行比较，无偏移容忍）。
-- `scripts/compare.js one`：单文件渲染对比（输出项目根 `compare.png`）。
+- `tools/art/compare.js one`：单文件渲染对比（输出项目根 `compare.png`）。
 - `tools/term-mode.sh`：判别终端是 ANSI.SYS 还是 DECAWM 语义。
 
 ## SGR 1（bold）与 24-bit 前景色的交互（t 序列）
