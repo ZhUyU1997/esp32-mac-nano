@@ -696,6 +696,14 @@ void vterm_esp32_selftest(framebuffer_t *lcd, mach_s3_blit_worker_t *blit_worker
 		s_vt = vterm_new(VTERM_ROWS, VTERM_COLS);
 		vterm_set_utf8(s_vt, 1);
 		vterm_output_set_callback(s_vt, vterm_output_cb, NULL);
+		/* ANSI.SYS default fg is colour 7 (light grey), libvterm's is xterm
+		 * white (240) — after a SGR 0 reset both must render colour 7, or
+		 * every uncoloured char drifts from the host renderer (vterm-ans).
+		 * The 240 default also quantises to panel-white on the RGB222 bus. */
+		VTermColor def_fg, def_bg;
+		vterm_color_indexed(&def_fg, 7);
+		vterm_color_indexed(&def_bg, 0);
+		vterm_state_set_default_colors(vterm_obtain_state(s_vt), &def_fg, &def_bg);
 		VTermScreen *scr0 = vterm_obtain_screen(s_vt);
 		vterm_screen_enable_altscreen(scr0, 1);
 		vterm_screen_enable_reflow(scr0, true);
