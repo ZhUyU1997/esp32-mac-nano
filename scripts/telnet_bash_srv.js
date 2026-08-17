@@ -332,6 +332,12 @@ const server = net.createServer((sock) => {
 				clearTimeout(autoTimer);
 				autoTimer = null;
 			}
+			/* pausing must also stop the paced stream of the current piece,
+			 * otherwise the remaining bytes keep flowing to the terminal */
+			if (streamTimer) {
+				clearInterval(streamTimer);
+				streamTimer = null;
+			}
 			console.log('art: autoplay off (manual)')
 		};
 		const resumeAuto = () => {
@@ -382,8 +388,14 @@ const server = net.createServer((sock) => {
 			}
 			/* 3J clears the scrollback too: switching pieces must not leave
 			 * the previous piece's scrolled-out rows behind (the vterm view
-			 * reads them back on scroll-up, mixing old and new content) */
-			sock.write('\x1b[2J\x1b[3J\x1b[H');
+			 * reads them back on scroll-up, mixing old and new content).
+			 * A paused/aborted stream can cut a multi-byte UTF-8 sequence
+			 * short, leaving the terminal's decoder waiting for continuation
+			 * bytes; the next piece's first high-byte char would then render
+			 * as U+FFFD. The leading space flushes the pending decoder state
+			 * (libvterm emits the replacement char there) and the clear that
+			 * follows removes it. */
+			sock.write(' \x1b[2J\x1b[3J\x1b[H');
 			streamTimer = writePaced(sock, p.buf, baudRate, () => {
 				streamTimer = null;
 				/* autoplay starts counting once the piece has fully streamed */
