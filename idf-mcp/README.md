@@ -46,7 +46,8 @@ MCP server 监听 `http://127.0.0.1:8765/mcp`。
 
 交互：**鼠标 hover 高亮 + 左键点击**，或键盘 `←/→` 移动 + `Enter` 触发。
 **输出区拖拽选中、`y` 复制**（OSC52，终端支持则直接进剪贴板；否则回退 clip.exe/xclip/pbcopy）。
-禁用按钮置灰不可触发。`Ctrl-C` = Stop（有命令运行时）/ 退出（空闲时）。
+**monitor 已接管（attached）时，Build/Flash/Flash+Mon/All/Monitor 不会禁用**：按下会自动停掉 monitor（`Ctrl-]`）再运行新命令，无需先 Stop；
+烧录中（flash_monitor 尚未接管）及 build/flash/execute 运行时仍置灰。`Ctrl-C` = Stop（有命令运行时）/ 退出（空闲时）。
 
 ## MCP 工具
 
@@ -55,22 +56,23 @@ MCP server 监听 `http://127.0.0.1:8765/mcp`。
 | `idf_execute(command, timeoutMs?, tail?)` | **阻塞**任意命令（`bash -c`），超时返回 `{status:"running"}`，命令继续跑 |
 | `idf_build(extra?, timeoutMs?, tail?)` | **阻塞** `idf.py build` |
 | `idf_flash(port?, timeoutMs?, tail?)` | **阻塞** `idf.py flash` |
-| `idf_flash_monitor(port?, wait?, timeoutMs?)` | **异步** `idf.py flash monitor --no-reset`（烧录+看日志，单复位）。给 `wait` 正则则阻塞直到命中（如 `Hard resetting via RTS pin`，此时 `timeoutMs` 必填）|
+| `idf_flash_monitor(port?, wait?, timeoutMs?)` | **半阻塞** `idf.py flash monitor --no-reset`（烧录+看日志，单复位）：阻塞到 monitor 接管（`Executing action: monitor`，烧录完成）才返回；给 `wait` 则继续阻塞到命中（如 `app_main`，此时 `timeoutMs` 必填）|
+| `idf_build_flash_monitor(port?, wait?, timeoutMs?)` | **半阻塞** `idf.py build flash monitor --no-reset`：先编译再烧录+看日志，返回时机同 `idf_flash_monitor` |
 | `idf_monitor(port?, wait?, timeoutMs?)` | **异步** `idf.py monitor`（启动即复位）；给 `wait` 则阻塞到命中（`timeoutMs` 必填）|
 | `idf_wait_for(pattern, timeoutMs, includePast?)` | 对当前命令**阻塞等待**日志，命中只返回匹配行（否则 `timedOut`/`exited`）；默认 forward-only，`includePast: true` 也匹配历史；`timeoutMs` 必填 |
 | `idf_reboot(port?)` | monitor 运行中→`Ctrl-T Ctrl-R`；空闲→开 monitor（启动复位）|
 | `idf_interrupt()` | 终止当前命令（monitor→`Ctrl-]`，其它→`Ctrl-C`）|
-| `idf_read_output(tail?, offset?, filter?, level?, clear?)` | 读当前命令输出（分页/过滤/级别）|
+| `idf_read_output(tail?, offset?, filter?, level?, invert?, caseSensitive?, count?, context?, clear?)` | 读当前命令输出（分页/过滤/级别；grep 风格：`invert` 反向 -v、`caseSensitive:false` 忽略大小写 -i、`count` 计数 -c、`context` 前后 N 行上下文）|
 | `idf_log_stats()` | 日志统计（I/W/E 计数）|
 | `idf_status()` | 运行状态 / 项目目录 / mock 标志 |
 
-资源 `idf://instructions`：给 agent 的任务说明。
+资源 `idf://instructions` 与 initialize 握手 `instructions` 字段（同一文本）：给 agent 的任务说明。
 
 ## 等待特定日志（不靠 sleep）
 
-`idf_flash_monitor` / `idf_monitor` 默认异步返回，agent 无法知道烧录/启动进度。两种方式确定性等待：
+`idf_flash_monitor` / `idf_build_flash_monitor` 阻塞到烧录完成、monitor 接管才返回（返回即代表烧录完成）；`idf_monitor` 默认异步返回。要确认固件启动进度，两种方式确定性等待：
 
-1. **`wait` 参数**：`idf_flash_monitor({ wait: "Hard resetting via RTS pin", timeoutMs: 60000 })` —— 启动后阻塞，直到该正则命中才返回（`status: matched`），monitor 继续后台跑。
+1. **`wait` 参数**：`idf_flash_monitor({ wait: "app_main", timeoutMs: 60000 })` —— 阻塞到 monitor 接管后再继续等 `app_main` 命中才返回（`status: matched`），monitor 继续后台跑。
 2. **`idf_wait_for`**：对已在跑的命令等日志，命中只返回匹配的那一行。默认 forward-only（只匹配调用之后的行）；加 `includePast: true` 则也匹配调用前已出现的行。如 `idf_wait_for({ pattern: "app_main", timeoutMs: 30000 })` 等固件跑起来，或 `idf_wait_for({ pattern: "Hard resetting via RTS pin", includePast: true, timeoutMs: 5000 })` 确认烧录是否已完成。
 
 **`timeoutMs` 一律必填，无默认值**——避免正则写错时静默长挂。
@@ -107,8 +109,10 @@ MCP_IDF_MOCK=1 node idf-mcp.ts   # 或 pnpm start:mock
 
 ## 实现说明
 
-- **单子进程槽位**：同一时刻只有一个子进程；人按按钮和 agent 调 MCP 工具打到同一个状态机，
-  忙时拒绝新命令（`a command is already running`）。
+- **单子进程槽位**：同一时刻只有一个子进程；人按按钮和 agent 调 MCP 工具打到同一个状态机。
+  **已接管（attached）的 monitor** 是“被动”的：启动任何新命令会自动停掉它（`Ctrl-]`）再开始，无需先
+  `idf_interrupt`；但 **flash_monitor/build_flash_monitor 尚在烧录阶段**（未出现 `Executing action: monitor`）
+  以及 build/flash/execute 运行中，会拒绝新命令（`a command is already running`），避免中止烧录。
 - **无持久 bash**：命令直接 `pty.spawn`（`idf.py` / `bash -c`），`exit` 事件给精确退出码；
   被信号打断的按 `128+signal` 计（Ctrl-C = 130）。
 - **输出双路**：子进程输出（a）解析成显示行喂给 React log（`\r` 进度条原地覆盖、

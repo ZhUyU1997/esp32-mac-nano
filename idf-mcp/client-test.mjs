@@ -33,6 +33,18 @@ await call("idf_monitor");
 await sleep(2500);
 let out = await call("idf_read_output", { tail: true });
 console.log("[monitor live] has mock log:", out.text.includes("mock log line"));
+
+// --- idf_read_output grep-style options (mock logs: "I/W/E (n) app_main: mock log line N") ---
+let g = await call("idf_read_output", { level: "E", count: true });
+console.log("[read_output -c] count > 0:", g.meta.totalLines > 0, "|", g.text);
+g = await call("idf_read_output", { filter: "APP_MAIN", caseSensitive: false, tail: false });
+console.log("[read_output -i] matches lowercase:", g.meta.totalLines > 0);
+g = await call("idf_read_output", { filter: "APP_MAIN", tail: false });
+console.log("[read_output case] sensitive no match:", g.meta.totalLines === 0);
+g = await call("idf_read_output", { filter: "app_main", invert: true, tail: false });
+console.log("[read_output -v] invert leaves no app_main:", !g.text.includes("app_main"));
+g = await call("idf_read_output", { level: "E", context: 1, tail: false });
+console.log("[read_output -C] context includes neighbors:", g.text.split("\n").some((l) => l.startsWith("W ") || l.startsWith("I ")));
 const rb = await call("idf_reboot");
 console.log("[reboot via monitor]", typeof rb === "string" && rb.includes("via monitor"));
 await sleep(1200);
@@ -43,9 +55,14 @@ await sleep(600);
 let st = JSON.parse(await call("idf_status"));
 console.log("[monitor interrupted] running:", st.running, "| exit:", st.lastCmd?.exit);
 
-// --- flash_monitor: async by default; wait= blocks until flash done ---
-const fm = await call("idf_flash_monitor", { wait: "Hard resetting via RTS pin", timeoutMs: 15000 });
-console.log("[flash_monitor wait] status:", fm.meta.status, "| matched:", fm.meta.matched);
+// --- flash_monitor: blocks until the monitor is attached (flash done),
+//     wait= keeps blocking until the app logs ---
+const fm = await call("idf_flash_monitor", { wait: "mock log line", timeoutMs: 15000 });
+console.log("[flash_monitor wait] status:", fm.meta.status, "| matched:", fm.meta.matched, "| running:", fm.meta.running);
+// default (no wait): blocks until the monitor is attached (flash done) — and
+// auto-stops the previously attached monitor first
+const fm2 = await call("idf_flash_monitor", { timeoutMs: 15000 });
+console.log("[flash_monitor default] status:", fm2.meta.status, "| matched:", fm2.meta.matched, "| running:", fm2.meta.running);
 // wait for the firmware to start printing (returns just the matched line)
 const wf = await call("idf_wait_for", { pattern: "mock log line", timeoutMs: 5000 });
 console.log("[wait_for] matched line:", wf);

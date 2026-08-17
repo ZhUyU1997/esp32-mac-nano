@@ -38,10 +38,12 @@ const MAX_LINE = 4096;
 const MOCK = process.env.MCP_IDF_MOCK === "1";
 const SERIAL_PORT = process.env.MCP_IDF_SERIAL_PORT ?? "";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const MOCK_FLASH = path.join(__dirname, "mock", "mock-flash.mjs");
-const MOCK_MONITOR = path.join(__dirname, "mock", "mock-monitor.mjs");
-const MOCK_FLASH_MONITOR = path.join(__dirname, "mock", "mock-flash-monitor.mjs");
-const MOCK_BUILD_FLASH_MONITOR = path.join(__dirname, "mock", "mock-build-flash-monitor.mjs");
+// mock scripts live at the project root (../mock when running from dist/)
+const MOCK_DIR = fs.existsSync(path.join(__dirname, "mock")) ? path.join(__dirname, "mock") : path.join(__dirname, "..", "mock");
+const MOCK_FLASH = path.join(MOCK_DIR, "mock-flash.mjs");
+const MOCK_MONITOR = path.join(MOCK_DIR, "mock-monitor.mjs");
+const MOCK_FLASH_MONITOR = path.join(MOCK_DIR, "mock-flash-monitor.mjs");
+const MOCK_BUILD_FLASH_MONITOR = path.join(MOCK_DIR, "mock-build-flash-monitor.mjs");
 
 // ---------------------------------------------------------------------------
 // IDF environment activation (captured ONCE, no persistent shell)
@@ -113,6 +115,10 @@ function pushOutput(data: string): void {
     lastLines.push(ln);
     lastBytes += Buffer.byteLength(ln);
     checkLineForWaiters(ln, ++lineSeq);
+    // flash_monitor/build_flash_monitor: monitor takeover = flash phase done.
+    // Only these kinds may transition to attached; build/flash/execute output
+    // mentioning the marker must never unlock the slot.
+    if (child && !child.attached && (child.kind === "flash_monitor" || child.kind === "build_flash_monitor") && /Executing action: monitor/.test(ln)) child.attached = true;
     while (lastBytes > RING_MAX && lastLines.length > 1) lastBytes -= Buffer.byteLength(lastLines.shift()!);
   }
 }
@@ -148,11 +154,11 @@ function clearOutput(): void {
   lastExit = null;
 }
 
-function safeRegex(pattern: string): RegExp {
+function safeRegex(pattern: string, flags?: string): RegExp {
   try {
-    return new RegExp(pattern);
+    return new RegExp(pattern, flags);
   } catch {
-    return new RegExp(pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+    return new RegExp(pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), flags);
   }
 }
 
@@ -161,13 +167,18 @@ interface ReadOpts {
   offset?: number;
   filter?: string;
   level?: "I" | "W" | "E";
+  invert?: boolean;
+  caseSensitive?: boolean;
+  count?: boolean;
+  context?: number;
 }
 function readOutput(opts: ReadOpts): { text: string; totalLines: number; nextOffset: number; hasMore: boolean } {
   drainPending();
+  const invert = opts.invert ?? false;
+  const re = opts.filter ? safeRegex(opts.filter, opts.caseSensitive === false ? "i" : undefined) : null;
   const matchedIdx: number[] = [];
   const hasFilter = Boolean(opts.filter || opts.level);
   if (hasFilter) {
-    const re = opts.filter ? safeRegex(opts.filter) : null;
     for (let i = 0; i < lastLines.length; i++) {
       const ln = lastLines[i];
       if (opts.level) {
@@ -176,26 +187,51 @@ function readOutput(opts: ReadOpts): { text: string; totalLines: number; nextOff
       }
       if (re) {
         re.lastIndex = 0;
-        if (!re.test(ln)) continue;
+        const m = re.test(ln);
+        if (invert ? m : !m) continue;
       }
       matchedIdx.push(i);
     }
   } else {
     for (let i = 0; i < lastLines.length; i++) matchedIdx.push(i);
   }
+
+  // grep -c: report the match count over the whole buffer, skip paging/context.
+  if (opts.count) {
+    return {
+      text: `${matchedIdx.length} matching line(s) in ${lastLines.length} buffered line(s)`,
+      totalLines: matchedIdx.length,
+      nextOffset: 0,
+      hasMore: false,
+    };
+  }
+
+  // grep -A/-B/-C: expand each match to a window of surrounding lines.
+  const ctx = opts.context ?? 0;
+  let idxs = matchedIdx;
+  if (ctx > 0 && hasFilter) {
+    const seen = new Set<number>();
+    for (const i of matchedIdx) {
+      const lo = Math.max(0, i - ctx);
+      const hi = Math.min(lastLines.length - 1, i + ctx);
+      for (let j = lo; j <= hi; j++) seen.add(j);
+    }
+    idxs = [...seen].sort((a, b) => a - b);
+  }
+
   const n = 100;
   const tail = opts.tail ?? true;
   let start: number;
   let end: number;
   if (tail) {
-    end = matchedIdx.length;
+    end = idxs.length;
     start = Math.max(0, end - n);
   } else {
     start = opts.offset ?? 0;
-    end = Math.min(matchedIdx.length, start + n);
+    end = Math.min(idxs.length, start + n);
   }
-  const slice = matchedIdx.slice(start, end).map((i) => lastLines[i]);
-  return { text: slice.join("\n"), totalLines: matchedIdx.length, nextOffset: end, hasMore: end < matchedIdx.length };
+  const slice = idxs.slice(start, end).map((i) => lastLines[i]);
+  return { text: slice.join("\n"), totalLines: idxs.length, nextOffset: end, hasMore: end < idxs.length };
 }
 
 // ---------------------------------------------------------------------------
@@ -363,7 +399,7 @@ function redraw(): void {
 // ---------------------------------------------------------------------------
 type Kind = "build" | "flash" | "build_flash_monitor" | "flash_monitor" | "monitor" | "execute";
 
-let child: { cmd: string; kind: Kind; proc: IPty; start: number } | null = null;
+let child: { cmd: string; kind: Kind; proc: IPty; start: number; attached: boolean } | null = null;
 let lastResult: { cmd: string; exit: number | null; end: number } | null = null;
 let exitWaiters: (() => void)[] = [];
 
@@ -385,7 +421,7 @@ function startChild(cmd: string, kind: Kind, file: string, args: string[]): void
     cwd: projectDir,
     env: { ...baseEnv, TERM: "xterm-256color" },
   });
-  child = { cmd, kind, proc, start: Date.now() };
+  child = { cmd, kind, proc, start: Date.now(), attached: kind === "monitor" };
   lastCmdName = cmd;
   proc.onData((data: string) => {
     if (isTTY) process.stdout.write(data); // raw passthrough into scroll region
@@ -534,25 +570,45 @@ function launch(spec: SpawnSpec): void {
   startChild(spec.cmd, spec.kind, spec.file, spec.args);
 }
 
+// --- button slot arbitration (mirrors withFreeSlot on the MCP side) ---
+let slotAction = false;
+function slotBlocked(): boolean {
+  return !!child && !child.attached;
+}
+async function stopAttachedMonitor(): Promise<void> {
+  if (!child || !child.attached) return;
+  console.error(`[idf-mcp] auto-stop monitor: ${child.cmd} -> button`);
+  interruptCurrent();
+  await waitForExit(15_000);
+}
+function doWithSlot(fn: () => void): void {
+  if (slotAction || slotBlocked()) return;
+  slotAction = true;
+  void (async () => {
+    try {
+      await stopAttachedMonitor();
+      if (child) return;
+      fn();
+    } finally {
+      slotAction = false;
+      redraw();
+    }
+  })();
+}
 function doBuild(): void {
-  if (child) return;
-  launch(specBuild());
+  doWithSlot(() => launch(specBuild()));
 }
 function doFlash(): void {
-  if (child) return;
-  launch(specFlash());
+  doWithSlot(() => launch(specFlash()));
 }
 function doFlashMonitor(): void {
-  if (child) return;
-  launch(specFlashMonitor());
+  doWithSlot(() => launch(specFlashMonitor()));
 }
 function doBuildFlashMonitor(): void {
-  if (child) return;
-  launch(specBuildFlashMonitor());
+  doWithSlot(() => launch(specBuildFlashMonitor()));
 }
 function doMonitor(): void {
-  if (child) return;
-  launch(specMonitor());
+  doWithSlot(() => launch(specMonitor()));
 }
 function doReboot(): void {
   if (child) {
@@ -579,11 +635,11 @@ function doQuit(): void {
 }
 
 buttonDefs.push(
-  { label: "Build", run: doBuild, disabled: () => !!child },
-  { label: "Flash", run: doFlash, disabled: () => !!child },
-  { label: "Flash+Mon", run: doFlashMonitor, disabled: () => !!child },
-  { label: "All", run: doBuildFlashMonitor, disabled: () => !!child },
-  { label: "Monitor", run: doMonitor, disabled: () => !!child },
+  { label: "Build", run: doBuild, disabled: () => slotBlocked() },
+  { label: "Flash", run: doFlash, disabled: () => slotBlocked() },
+  { label: "Flash+Mon", run: doFlashMonitor, disabled: () => slotBlocked() },
+  { label: "All", run: doBuildFlashMonitor, disabled: () => slotBlocked() },
+  { label: "Monitor", run: doMonitor, disabled: () => slotBlocked() },
   { label: "Reboot", run: doReboot, disabled: () => !!child && child.kind !== "monitor" },
   { label: "Stop", run: doStop, disabled: () => !child },
   { label: "Clear", run: doClear, disabled: () => false },
@@ -720,10 +776,101 @@ async function runAsyncWait(
 }
 
 // ---------------------------------------------------------------------------
+// flash+monitor tools: block until the monitor is attached (flash phase done), so
+// the return alone means flashing finished — no extra idf_wait_for needed. An
+// optional wait regex keeps blocking for a later marker (e.g. app_main).
+// ---------------------------------------------------------------------------
+type ToolResult = { content: { type: "text"; text: string }[]; isError?: true };
+
+async function waitForAttached(timeoutMs: number): Promise<WaitOutcome> {
+  if (!child) return "exited";
+  if (child.attached) return "matched";
+  return waitForMatch("Executing action: monitor", timeoutMs);
+}
+
+async function runFlashMonitor(spec: SpawnSpec, wait: string | undefined, timeoutMs: number, tailLines: number = TAIL_LINES): Promise<ToolResult> {
+  launch(spec);
+  let outcome = await waitForAttached(timeoutMs);
+  let matched: string | null = outcome === "matched" ? "Executing action: monitor" : null;
+  if (outcome === "matched" && wait) {
+    outcome = await waitForMatch(wait, timeoutMs);
+    matched = outcome === "matched" ? wait : null;
+  }
+  drainPending();
+  const tail = lastLines.slice(-tailLines).join("\n");
+  return {
+    content: [
+      { type: "text", text: tail || "(no output yet)" },
+      {
+        type: "text",
+        text: JSON.stringify({
+          status: outcome,
+          command: lastCmdName,
+          matched,
+          exit: outcome === "exited" ? lastExit : null,
+          running: child?.cmd ?? null,
+          totalLines: lastLines.length,
+        }),
+      },
+    ],
+  };
+}
+
+// ---------------------------------------------------------------------------
+// slot arbitration: an ATTACHED monitor is passive (just watching logs), so any
+// new command auto-stops it (Ctrl-]) and launches immediately — no separate
+// idf_interrupt step. While flash_monitor/build_flash_monitor are still flashing
+// (not attached), and for build/flash/execute in progress, new commands are
+// hard-busy: aborting an in-progress flash is refused.
+// ---------------------------------------------------------------------------
+async function withFreeSlot(run: () => Promise<ToolResult>): Promise<ToolResult> {
+  if (!child) return run();
+  const busy = busyError()!;
+  if (!child.attached) return busy;
+  console.error(`[idf-mcp] auto-stop monitor: ${child.cmd} -> new command`);
+  interruptCurrent();
+  if (!(await waitForExit(15_000))) return busy;
+  return run();
+}
+
+// ---------------------------------------------------------------------------
 // MCP server
+// Shared so both the initialize-handshake `instructions` field and the
+// idf://instructions resource stay in sync.
+const SERVER_INSTRUCTIONS = `You drive an ESP-IDF console: ONE command slot, shared with the human
+(same TUI buttons). Check idf_status first. An attached monitor is passive — any new
+command auto-stops it (Ctrl-]) and starts; flashing in progress and build/flash/
+execute are hard-busy ("a command is already running").
+
+WORKFLOW — one-shot
+- idf_build_flash_monitor (All): build + flash + attach monitor (--no-reset, one
+  reset). idf_flash_monitor (Flash+Mon): same, no build. Both BLOCK until the monitor
+  is attached ("Executing action: monitor") — return means flashing done; pass
+  wait: "app_main" (+timeoutMs) to also wait for app start.
+- Split steps only if needed: idf_build (BLOCKING, exit==0) -> idf_flash (BLOCKING)
+  -> idf_monitor (ASYNC).
+
+WAITING — never sleep
+- Markers: "Hard resetting via RTS pin" flash done | "Executing action: monitor"
+  attached | "app_main" app booted.
+- idf_wait_for(pattern, timeoutMs): timeoutMs REQUIRED; returns matched line /
+  exited / timedOut. Forward-only by default; includePast:true scans history (may
+  match stale lines from earlier runs).
+
+OBSERVING
+- idf_read_output: last 100 lines; filter regex with invert/caseSensitive/count/
+  context (grep-style), level:"E" for errors. Ring buffer 16 MB — old lines
+  evicted. idf_log_stats: I/W/E counts. idf_status: running / last exit.
+- Timeouts (600 s) leave the process running — keep observing, don't start a second
+  command. idf_reboot: reset via monitor (async; confirm with idf_wait_for("app_main"));
+  starts a monitor when idle.`;
+
 // ---------------------------------------------------------------------------
 function createServer(): McpServer {
-  const mcp = new McpServer({ name: "idf-mcp", version: "0.7.0" });
+  const mcp = new McpServer(
+    { name: "idf-mcp", version: "0.8.0" },
+    { instructions: SERVER_INSTRUCTIONS },
+  );
 
   mcp.resource(
     "idf instructions",
@@ -734,18 +881,7 @@ function createServer(): McpServer {
         {
           uri: uri.toString(),
           mimeType: "text/plain",
-          text:
-            "You drive the ESP-IDF project console. The human watches the same TUI and can " +
-            "also press buttons (Build/Flash/Flash+Mon/Monitor/Reboot/Stop). Prefer idf_build, " +
-            "idf_flash, idf_flash_monitor, idf_monitor for the standard workflow. " +
-            "idf_flash_monitor flashes then attaches the monitor with --no-reset so the chip " +
-            "reboots only once. To know when flashing is done (instead of sleeping), pass " +
-            'wait: "Hard resetting via RTS pin" (plus a timeoutMs) to idf_flash_monitor / ' +
-            'idf_build_flash_monitor, or call idf_wait_for with a regex (e.g. "app_main") and a ' +
-            'required timeoutMs against the running monitor (includePast: true also counts ' +
-            'already-emitted lines). ' +
-            "Interrupt with idf_interrupt. Reboot the chip with idf_reboot. " +
-            "Read output with idf_read_output.",
+          text: SERVER_INSTRUCTIONS,
         },
       ],
     }),
@@ -753,114 +889,101 @@ function createServer(): McpServer {
 
   mcp.tool(
     "idf_execute",
+    "Run an arbitrary shell command (bash -c) in the IDF project dir. BLOCKING. Only for steps without a dedicated tool; prefer the dedicated idf_* tools.",
     {
       command: z.string().describe("Arbitrary shell command to run (bash -c) in the IDF project."),
       timeoutMs: z.number().int().min(1000).max(3_600_000).optional().describe("Max wait for completion in ms (default 600000)."),
       tail: z.number().int().min(1).max(100).describe("How many tail lines of output to return."),
     },
     async ({ command, timeoutMs, tail }) => {
-      const busy = busyError();
-      if (busy) return busy;
-      return runBlocking(specExecute(command), timeoutMs, tail);
+      return withFreeSlot(() => runBlocking(specExecute(command), timeoutMs, tail));
     },
   );
 
   mcp.tool(
     "idf_build",
+    "Build the ESP-IDF project (idf.py build). BLOCKING, exit==0 on success. Call before flashing or after source changes.",
     {
       extra: z.string().regex(/^[\w\-.= /]+$/, "extra may only contain idf.py build flags").optional().describe("Extra idf.py build arguments."),
       timeoutMs: z.number().int().min(1000).max(3_600_000).optional().describe("Max wait for completion in ms."),
       tail: z.number().int().min(1).max(100).describe("How many tail lines of output to return."),
     },
     async ({ extra, timeoutMs, tail }) => {
-      const busy = busyError();
-      if (busy) return busy;
-      return runBlocking(specBuild(extra), timeoutMs, tail);
+      return withFreeSlot(() => runBlocking(specBuild(extra), timeoutMs, tail));
     },
   );
 
   mcp.tool(
     "idf_flash",
+    "Flash the built firmware (idf.py flash). BLOCKING; output \"Hard resetting via RTS pin\" marks flashing done.",
     {
       port: z.string().regex(/^[A-Za-z0-9_.\-/]+$/, "port must be a serial device path").optional().describe("Serial port, e.g. /dev/ttyUSB0."),
       timeoutMs: z.number().int().min(1000).max(3_600_000).optional().describe("Max wait for completion in ms."),
       tail: z.number().int().min(1).max(100).describe("How many tail lines of output to return."),
     },
     async ({ port, timeoutMs, tail }) => {
-      const busy = busyError();
-      if (busy) return busy;
-      return runBlocking(specFlash(port), timeoutMs, tail);
+      return withFreeSlot(() => runBlocking(specFlash(port), timeoutMs, tail));
     },
   );
 
   mcp.tool(
     "idf_monitor",
+    "Attach the serial monitor (async, returns immediately), or block with wait until a regex appears. For the common build+flash+log flow prefer idf_flash_monitor / idf_build_flash_monitor.",
     {
       port: z.string().regex(/^[A-Za-z0-9_.\-/]+$/, "port must be a serial device path").optional().describe("Serial port, e.g. /dev/ttyUSB0."),
       wait: z.string().min(1).optional().describe("Regex; block until it appears in output (e.g. app_main to wait for the app to start)."),
       timeoutMs: z.number().int().min(1000).max(3_600_000).optional().describe("Max wait for `wait` in ms; required when wait is set."),
     },
     async ({ port, wait, timeoutMs }) => {
-      const busy = busyError();
-      if (busy) return busy;
       const spec = specMonitor(port);
       if (wait) {
         if (timeoutMs == null) {
           return { content: [{ type: "text", text: "timeoutMs is required when wait is set" }], isError: true };
         }
-        return runAsyncWait(spec, wait, timeoutMs);
+        return withFreeSlot(() => runAsyncWait(spec, wait, timeoutMs));
       }
-      launch(spec);
-      return { content: [{ type: "text", text: `started: ${spec.cmd}` }] };
+      return withFreeSlot(async () => {
+        launch(spec);
+        return { content: [{ type: "text", text: `started: ${spec.cmd}` }] };
+      });
     },
   );
 
   mcp.tool(
     "idf_flash_monitor",
+    "Flash then attach the monitor (one-shot, no build). BLOCKS until the monitor is attached (\"Executing action: monitor\") — return means flashing done; pass wait: \"app_main\" to also wait for app start.",
     {
       port: z.string().regex(/^[A-Za-z0-9_.\-/]+$/, "port must be a serial device path").optional().describe("Serial port, e.g. /dev/ttyUSB0."),
-      wait: z.string().min(1).optional().describe('Regex; block until it appears (default: return immediately). Flash done = "Hard resetting via RTS pin"; monitor attached = "Executing action: monitor"; app started = "app_main".'),
-      timeoutMs: z.number().int().min(1000).max(3_600_000).optional().describe("Max wait for `wait` in ms; required when wait is set."),
+      wait: z.string().min(1).optional().describe('Regex to wait for AFTER the monitor is attached (default: the call blocks until the monitor is attached = flashing done, then returns). e.g. "app_main" for app start.'),
+      timeoutMs: z.number().int().min(1000).max(3_600_000).optional().describe("Max wait in ms for the attach phase, and for wait when set. Required when wait is set (default 600000)."),
     },
     async ({ port, wait, timeoutMs }) => {
-      const busy = busyError();
-      if (busy) return busy;
-      const spec = specFlashMonitor(port);
-      if (wait) {
-        if (timeoutMs == null) {
-          return { content: [{ type: "text", text: "timeoutMs is required when wait is set" }], isError: true };
-        }
-        return runAsyncWait(spec, wait, timeoutMs);
+      if (wait && timeoutMs == null) {
+        return { content: [{ type: "text", text: "timeoutMs is required when wait is set" }], isError: true };
       }
-      launch(spec);
-      return { content: [{ type: "text", text: `started: ${spec.cmd}` }] };
+      return withFreeSlot(() => runFlashMonitor(specFlashMonitor(port), wait, timeoutMs ?? DEFAULT_TIMEOUT_MS));
     },
   );
 
   mcp.tool(
     "idf_build_flash_monitor",
+    "Build, flash, and attach the monitor in one go — the recommended one-shot flow. BLOCKS until the monitor is attached; pass wait: \"app_main\" to also wait for app start.",
     {
       port: z.string().regex(/^[A-Za-z0-9_.\-/]+$/, "port must be a serial device path").optional().describe("Serial port, e.g. /dev/ttyUSB0."),
-      wait: z.string().min(1).optional().describe('Regex; block until it appears (default: return immediately). Flash done = "Hard resetting via RTS pin"; monitor attached = "Executing action: monitor"; app started = "app_main".'),
-      timeoutMs: z.number().int().min(1000).max(3_600_000).optional().describe("Max wait for `wait` in ms; required when wait is set."),
+      wait: z.string().min(1).optional().describe('Regex to wait for AFTER the monitor is attached (default: the call blocks until the monitor is attached = flashing done, then returns). e.g. "app_main" for app start.'),
+      timeoutMs: z.number().int().min(1000).max(3_600_000).optional().describe("Max wait in ms for the attach phase, and for wait when set. Required when wait is set (default 600000)."),
     },
     async ({ port, wait, timeoutMs }) => {
-      const busy = busyError();
-      if (busy) return busy;
-      const spec = specBuildFlashMonitor(port);
-      if (wait) {
-        if (timeoutMs == null) {
-          return { content: [{ type: "text", text: "timeoutMs is required when wait is set" }], isError: true };
-        }
-        return runAsyncWait(spec, wait, timeoutMs);
+      if (wait && timeoutMs == null) {
+        return { content: [{ type: "text", text: "timeoutMs is required when wait is set" }], isError: true };
       }
-      launch(spec);
-      return { content: [{ type: "text", text: `started: ${spec.cmd}` }] };
+      return withFreeSlot(() => runFlashMonitor(specBuildFlashMonitor(port), wait, timeoutMs ?? DEFAULT_TIMEOUT_MS));
     },
   );
 
   mcp.tool(
     "idf_reboot",
+    "Reset the chip: sends Ctrl-T Ctrl-R via the attached monitor, or starts a monitor that resets the chip on startup when idle.",
     {
       port: z.string().regex(/^[A-Za-z0-9_.\-/]+$/, "port must be a serial device path").optional().describe("Serial port, e.g. /dev/ttyUSB0."),
     },
@@ -878,7 +1001,7 @@ function createServer(): McpServer {
     },
   );
 
-  mcp.tool("idf_interrupt", {}, async () => {
+  mcp.tool("idf_interrupt", "Send an interrupt (Ctrl-C / Ctrl-]) to the running command or monitor. Use to stop a build/flash or detach a monitor.", {}, async () => {
     const cmd = child?.cmd ?? null;
     interruptCurrent();
     return {
@@ -888,15 +1011,20 @@ function createServer(): McpServer {
 
   mcp.tool(
     "idf_read_output",
+    "Read lines from the captured output ring buffer (16 MB, oldest evicted). grep-style filtering: filter regex with invert (-v), caseSensitive (set false for -i), count (-c), context (surrounding lines); level:\"E\" for errors. Use idf_log_stats for level counts.",
     {
       tail: z.boolean().optional().describe("Return the most recent lines (default true); false reads from offset"),
       offset: z.number().int().min(0).optional().describe("Line index to start from (used when tail=false)"),
       filter: z.string().optional().describe("Regex filter on line content"),
       level: z.enum(["I", "W", "E"]).optional().describe("Filter by ESP-IDF log level prefix"),
+      invert: z.boolean().optional().describe("grep -v: exclude lines matching the filter (default false)"),
+      caseSensitive: z.boolean().optional().describe("Case-sensitive matching (default true; set false for grep -i)"),
+      count: z.boolean().optional().describe("grep -c: return only the number of matching lines, skip content"),
+      context: z.number().int().min(0).optional().describe("grep -A/-B/-C: include this many surrounding lines around each match (subject to normal tail/offset paging)"),
       clear: z.boolean().optional().describe("Clear the buffer after reading (default false)"),
     },
-    async ({ tail, offset, filter, level, clear }) => {
-      const r = readOutput({ tail, offset, filter, level });
+    async ({ tail, offset, filter, level, invert, caseSensitive, count, context, clear }) => {
+      const r = readOutput({ tail, offset, filter, level, invert, caseSensitive, count, context });
       if (clear) clearOutput();
       return {
         content: [
@@ -918,7 +1046,7 @@ function createServer(): McpServer {
     },
   );
 
-  mcp.tool("idf_log_stats", {}, async () => {
+  mcp.tool("idf_log_stats", "Count I/W/E/other log levels in the captured output buffer and report last command status.", {}, async () => {
     drainPending();
     let info = 0;
     let warn = 0;
@@ -945,7 +1073,7 @@ function createServer(): McpServer {
     };
   });
 
-  mcp.tool("idf_status", {}, async () => {
+  mcp.tool("idf_status", "Report console state: running command, last command + exit code, buffer size. Check before starting any new command — one slot shared with the human.", {}, async () => {
     return {
       content: [
         {
@@ -954,7 +1082,7 @@ function createServer(): McpServer {
             {
               projectDir,
               mock: MOCK,
-              running: child ? { cmd: child.cmd, kind: child.kind, seconds: Math.round((Date.now() - child.start) / 1000) } : null,
+              running: child ? { cmd: child.cmd, kind: child.kind, seconds: Math.round((Date.now() - child.start) / 1000), attached: child.attached } : null,
               lastCmd: lastResult ? { cmd: lastResult.cmd, exit: lastResult.exit, secondsAgo: Math.round((Date.now() - lastResult.end) / 1000) } : null,
               bufferBytes: lastBytes,
               bufferLines: lastLines.length,
@@ -969,6 +1097,7 @@ function createServer(): McpServer {
 
   mcp.tool(
     "idf_wait_for",
+    "Block until a regex matches the current command's output (timeoutMs required; forward-only unless includePast). Use to wait for app_main after flashing.",
     {
       pattern: z.string().min(1).describe("Regex to wait for in the current command's output."),
       timeoutMs: z.number().int().min(1000).max(3_600_000).describe("Max wait in ms (required)."),

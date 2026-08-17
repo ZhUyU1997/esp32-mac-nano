@@ -24,7 +24,12 @@ const stop = () => {
 };
 
 // Raw-mode stdin, like esp-idf-monitor reads from the terminal.
-process.stdin.setRawMode?.(true);
+// Tolerate non-TTY stdin (headless MCP testing): raw mode just isn't available.
+try {
+  process.stdin.setRawMode?.(true);
+} catch {
+  /* non-TTY stdin, keys not available */
+}
 process.stdin.resume();
 let tail = "";
 process.stdin.on("data", (d) => {
