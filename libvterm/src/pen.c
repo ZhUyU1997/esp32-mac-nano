@@ -182,6 +182,9 @@ static void set_pen_col_ansi(VTermState *state, VTermAttr attr, long col)
   if(attr == VTERM_ATTR_FOREGROUND) {
     state->pen.last_fg16 = *colp;
     state->pen.fg_from_t = 0;
+  } else {
+    state->pen.last_bg16 = *colp;
+    state->pen.bg_from_t = 0;
   }
 
   setpenattr_col(state, attr, *colp);
@@ -214,6 +217,8 @@ INTERNAL void vterm_state_resetpen(VTermState *state)
   state->pen.fg = state->default_fg;  setpenattr_col(state, VTERM_ATTR_FOREGROUND, state->default_fg);
   state->pen.last_fg16 = state->default_fg;
   state->pen.fg_from_t = 0;
+  state->pen.last_bg16 = state->default_bg;
+  state->pen.bg_from_t = 0;
   state->pen.bg = state->default_bg;  setpenattr_col(state, VTERM_ATTR_BACKGROUND, state->default_bg);
 }
 
@@ -370,11 +375,38 @@ INTERNAL void vterm_state_setpen(VTermState *state, const long args[], int argco
       break;
 
     case 5: // Blink
+      if(state->pen.bg_from_t) {
+        /* PabloDraw 24-bit bg does not survive attribute switches
+         * (libansilove clears background24 on SGR 5 too). */
+        state->pen.bg = state->pen.last_bg16;
+        state->pen.bg_from_t = 0;
+        setpenattr_col(state, VTERM_ATTR_BACKGROUND, state->pen.bg);
+      }
       state->pen.blink = 1;
       setpenattr_bool(state, VTERM_ATTR_BLINK, 1);
       break;
 
     case 7: // Reverse on
+#ifdef VTERM_ANSI_SYS_MODE
+      /* ANSI.SYS semantics (MS-DOS 4.0 ANSI.ASM GRMODE): SGR 7 sets the
+       * attribute to black-on-white directly ((attr & 0xF8) | 0x70),
+       * keeping the fg high bit (bold) and blink. Not a rendering-time
+       * swap, so a following SGR colour change keeps the white
+       * background (ESC[7m ESC[30m = visible black-on-white, as on a
+       * real DOS terminal). */
+      if(state->pen.fg_from_t) {
+        /* Same as bold: PabloDraw 24-bit fg does not survive attribute
+         * switches (libansilove's invert only swaps the 16-color pair). */
+        state->pen.fg = state->pen.last_fg16;
+        state->pen.fg_from_t = 0;
+      }
+      state->pen.fg.type = VTERM_COLOR_INDEXED;
+      state->pen.fg.indexed.idx = state->pen.fg.indexed.idx & 8;
+      state->pen.bg.type = VTERM_COLOR_INDEXED;
+      state->pen.bg.indexed.idx = 7;
+      setpenattr_col(state, VTERM_ATTR_FOREGROUND, state->pen.fg);
+      setpenattr_col(state, VTERM_ATTR_BACKGROUND, state->pen.bg);
+#else
       state->pen.reverse = 1;
       setpenattr_bool(state, VTERM_ATTR_REVERSE, 1);
       if(state->pen.fg_from_t) {
@@ -384,6 +416,7 @@ INTERNAL void vterm_state_setpen(VTermState *state, const long args[], int argco
         state->pen.fg_from_t = 0;
         setpenattr_col(state, VTERM_ATTR_FOREGROUND, state->pen.fg);
       }
+#endif
       break;
 
     case 8: // Conceal on
@@ -423,6 +456,11 @@ INTERNAL void vterm_state_setpen(VTermState *state, const long args[], int argco
       break;
 
     case 25: // Blink off
+      if(state->pen.bg_from_t) {
+        state->pen.bg = state->pen.last_bg16;
+        state->pen.bg_from_t = 0;
+        setpenattr_col(state, VTERM_ATTR_BACKGROUND, state->pen.bg);
+      }
       state->pen.blink = 0;
       setpenattr_bool(state, VTERM_ATTR_BLINK, 0);
       break;
@@ -473,6 +511,7 @@ INTERNAL void vterm_state_setpen(VTermState *state, const long args[], int argco
       if(argcount - argi < 1)
         return;
       argi += 1 + lookup_colour(state, CSI_ARG(args[argi+1]), args+argi+2, argcount-argi-2, &state->pen.bg);
+      state->pen.bg_from_t = 0;
       setpenattr_col(state, VTERM_ATTR_BACKGROUND, state->pen.bg);
       break;
 

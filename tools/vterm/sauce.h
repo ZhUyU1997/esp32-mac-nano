@@ -7,11 +7,11 @@
  * art renderer (libansilove-style) needs that the byte stream itself does
  * not provide.
  *
- * Layout (from the SAUCE specification):
- *   ID(5) "SAUCE" Version(2) Title(35) Author(20) Group(20) Date(8)
- *   FileSize(4 LE) DataType(1) FileType(1) TInfo1(2 LE)=columns
- *   TInfo2(2 LE)=rows TInfo3(2 LE)=font TInfo4(2 LE) Comments(4 LE)
- *   Flags(1, bit0 = iCE colours) + 19 unused bytes = 128 total.
+ * Layout (from the SAUCE specification, ACiD rev5):
+ *   ID(5) "SAUCE" Version(2) "00" Title(35) Author(20) Group(20)
+ *   Date(8) FileSize(4 LE) DataType(1) FileType(1) TInfo1(2 LE)=columns
+ *   TInfo2(2 LE)=rows TInfo3(2 LE)=font TInfo4(2 LE) Comments(1)
+ *   TFlags(1, bit0 = iCE colours) TInfoS(22) = 128 total.
  * An optional COMNT record (255 B per line) sits between the art and the
  * SAUCE record: "COMNT"(5) + line count(2 LE) + count*255 bytes.
  */

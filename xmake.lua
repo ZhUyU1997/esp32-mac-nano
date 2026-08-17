@@ -40,7 +40,7 @@ target("vterm-ans")
     add_includedirs("libvterm/include", "tools/vterm")
     add_files("tools/vterm/vterm-ans.c", "tools/vterm/term_render.c",
               "tools/vterm/sauce.c", "tools/vterm/cp437.c")
-    add_syslinks("z")
+    add_syslinks("png")
 
 target("vterm-sdl")
     set_kind("binary")
@@ -61,6 +61,7 @@ target("vterm-test")
     -- palette colours through libvterm, so the expectations below must
     -- match the compiled palette
     add_defines("VTERM_ANSI_SYS_MODE", "VTERM_ANSI_SYS_PALETTE")
+
 
 target("mini-mac-sdl")
     set_kind("binary")

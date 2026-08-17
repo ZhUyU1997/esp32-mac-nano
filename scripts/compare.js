@@ -39,6 +39,12 @@ const SCALE = 0.5;
  * Only the target entry is inflated (the whole-pack readZip is the slow path). */
 function pickOne(argv) {
 	let cut = 0;
+	let log = LOG;
+	const li = argv.indexOf('--log');
+	if (li >= 0 && li + 1 < argv.length) {
+		log = argv[li + 1];
+		argv.splice(li, 2);
+	}
 	const ci = argv.indexOf('--cut');
 	if (ci >= 0 && ci + 1 < argv.length) {
 		cut = parseInt(argv[ci + 1], 10);
@@ -59,7 +65,7 @@ function pickOne(argv) {
 	} else {
 		/* fall back to the first FAIL in the log */
 		buf = null;
-		for (const line of fs.readFileSync(LOG, 'utf8').split('\n')) {
+		for (const line of fs.readFileSync(log, 'utf8').split('\n')) {
 			/* unified name: "pack / entry" (no spaces inside either) */
 			const m = line.match(/^FAIL (\S+) \/ (\S+): /);
 			if (!m) continue;
@@ -74,7 +80,7 @@ function pickOne(argv) {
 				}
 			} catch (err) { /* broken pack: try next FAIL */ }
 		}
-		if (buf === null) throw new Error('no usable FAIL found in ' + LOG);
+		if (buf === null) throw new Error('no usable FAIL found in ' + log);
 	}
 	if (cut > 0) {
 		buf = buf.slice(0, cut);
@@ -137,22 +143,34 @@ v = Image.open(vtm).convert('RGB')
 rows_a, rows_v = a.size[1]//16, v.size[1]//16
 cols = a.size[0]//8
 common = max(rows_a, rows_v)  # show full height of both (min would hide overflow)
-# diff map from the node-computed cell map (column mismatch: all red)
+minrows = min(rows_a, rows_v)
+# diff map from the node-computed cell map (covers min rows only: the
+# extra rows of the taller renderer are a row-count gap, not per-cell
+# differences, and get a grey marker instead of red)
 flat = np.array(json.load(open(map_file)), dtype=bool)
-if flat.size == common * cols:
-    cells = flat.reshape(common, cols)
+cells = np.zeros((common, cols), dtype=bool)
+if flat.size == minrows * cols:
+    cells[:minrows] = flat.reshape(minrows, cols)
 else:
-    cells = np.ones((common, cols), dtype=bool)
+    # column mismatch or no map: mark everything red as before
+    cells[:minrows] = True
+gap = np.zeros((common, cols), dtype=bool)
+gap[minrows:] = True
 red = np.array([255,60,60], dtype=np.uint8)
-dmarr = np.broadcast_to(np.where(cells[:,None,:,None,None], red[None,None,None,None,:], 0),
-                        (common, 16, cols, 8, 3)).copy()
+grey = np.array([150,150,150], dtype=np.uint8)
+mark = np.where(cells[:,None,:,None,None], red[None,None,None,None,:], 0)
+mark = np.where(gap[:,None,:,None,None], grey[None,None,None,None,:], mark)
+dmarr = np.broadcast_to(mark, (common, 16, cols, 8, 3)).copy()
 dm = Image.fromarray(dmarr.transpose(0,1,2,3,4).reshape(common*16, cols*8, 3))
 s = ${SCALE}
 ta = a.crop((0, 0, a.size[0], common*16)).resize((int(a.size[0]*s), int(common*16*s)), Image.NEAREST)
 tv = v.crop((0, 0, v.size[0], common*16)).resize((int(v.size[0]*s), int(common*16*s)), Image.NEAREST)
 tdm = dm.resize((int(a.size[0]*s), int(common*16*s)), Image.NEAREST)
 bar = 30
-h = ta.height + 30 + 16  # bottom padding so the last row mark fits
+# full height of the taller renderer: when the rows differ, the shorter
+# column just leaves white space at its bottom (crop of the shorter image
+# returns less than common*16 rows, so base the canvas on the cell map)
+h = int(common*16*s) + 30 + 16  # bottom padding so the last row mark fits
 left_x = bar             # left content column
 right_x = bar + ta.width + 40  # right content column
 dm_x = right_x + ta.width + 40   # diff map column, right after the vterm-ans column
@@ -249,7 +267,12 @@ function cmdList(argv) {
 		console.error('compare list: ' + r.error.message);
 		process.exit(1);
 	}
-	console.log('log: ' + log);
+	/* move the log to the fixed path (compare.js one reads it by
+	 * default), then drop the work tree — no temp residue */
+	const finalLog = path.join(os.tmpdir(), 'art-compare.log');
+	try { fs.copyFileSync(log, finalLog); } catch (e) { /* no log */ }
+	fs.rmSync(work, { recursive: true, force: true });
+	console.log('log: ' + finalLog);
 }
 
 /* ---- dispatch ---------------------------------------------------------- */
@@ -257,7 +280,8 @@ function cmdList(argv) {
 function usage() {
 	console.error(
 	    'usage: node scripts/compare.js <one|list> [...]\n' +
-	    '  one [pack entry | file.ans] [--cut N]   single-file compare -> compare.png\n' +
+	    '  one [pack entry | file.ans] [--cut N] [--log FILE]   single-file compare -> compare.png\n' +
+	    '      --log FILE   FAIL log for the no-arg fallback (default /tmp/art-compare.log)\n' +
 	    '  list [list.txt] [--limit N] [--concurrency N]   batch via test-art.js');
 	process.exit(1);
 }

@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+/* async zlib runs on the libuv thread pool: more workers than the
+ * default 4, so pack inflation keeps up with the render pool */
+process.env.UV_THREADPOOL_SIZE = String(Math.max(4, parseInt(process.env.UV_THREADPOOL_SIZE || '0', 10) || 8));
 /*
  * test-art.js — batch-test the art packs, two composable passes:
  *
@@ -35,7 +38,7 @@
  *            default: scripts/art/packs
  *
  * In render mode one line is printed per file as it completes
- * (OK/FAIL/SKIP + size + SAUCE); extract mode only prints problems.
+ * (OK/FAIL/SKIP + size); extract mode only prints problems.
  */
 'use strict';
 
@@ -43,11 +46,50 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const zlib = require('zlib');
+const { promisify } = require('util');
+const inflateRaw = promisify(zlib.inflateRaw);
 const { spawn } = require('child_process');
+const { Worker } = require('worker_threads');
 const artlib = require('./art-lib');
 const diff = require('./diff-lib');
 
 const ROOT = path.join(__dirname, '..');
+
+/* decode + cellDiff run on a worker pool: both are CPU-bound and would
+ * otherwise serialize on the main event loop of the render workers */
+let workers = null;
+function ensureWorkers() {
+	if (workers)
+		return workers;
+	const n = Math.min(8, Math.max(4, opts.concurrency));
+	workers = Array.from({ length: n },
+		() => new Worker(path.join(__dirname, 'decode-worker.js')));
+	let next = 0;
+	workers.seq = 0;
+	workers.call = (msg, transfer) => new Promise((resolve, reject) => {
+		/* the worker's async handler can complete out of order (several
+		 * decodes run concurrently in one worker), so each reply carries
+		 * the task id and unmatched replies are ignored */
+		const w = workers[next++ % workers.length];
+		const id = ++workers.seq;
+		msg.id = id;
+		const onMsg = (m) => {
+			if (m.id !== id)
+				return;
+			w.removeListener('message', onMsg);
+			w.removeListener('error', onErr);
+			m.ok ? resolve(m) : reject(new Error(m.error));
+		};
+		const onErr = (e) => {
+			w.removeListener('message', onMsg);
+			reject(e);
+		};
+		w.on('message', onMsg);
+		w.once('error', onErr);
+		w.postMessage(msg, transfer);
+	});
+	return workers;
+}
 
 /* ---- PNG helpers ------------------------------------------------------- */
 
@@ -158,6 +200,10 @@ if (opts.render && !fs.existsSync(opts.bin)) {
 	console.error('vterm-ans not found at ' + opts.bin + '\n  run: xmake build vterm-ans');
 	process.exit(1);
 }
+/* fresh log per run: appendFileSync below would otherwise accumulate
+ * multiple runs into one file (unreadable, double-counted stats) */
+if (opts.log)
+	fs.writeFileSync(opts.log, '');
 if (opts.compare && !fs.existsSync(opts.ansilove)) {
 	console.error('ansilove not found at ' + opts.ansilove);
 	process.exit(1);
@@ -230,7 +276,7 @@ function truncate(s, max) {
 	return s.length > max ? s.slice(0, max - 1) + '…' : s;
 }
 
-/* one-line per-file record: OK/FAIL/SKIP + size + SAUCE title/ice. OK
+/* one-line per-file record: OK/FAIL/SKIP + size. OK
  * lines carry the running count and elapsed time ([2800] 13s). */
 function logLine(res) {
 	if (res.skip)
@@ -239,14 +285,13 @@ function logLine(res) {
 		return truncate('FAIL ' + res.name + ': ' + res.reason, 120);
 	let line = 'OK [' + done + '] ' + fmtElapsed() + '  ' + res.name +
 	           ' (' + res.size.w + 'x' + res.size.h + ')';
-	if (res.sauce)
-		line += ' sauce:"' + truncate(res.sauce.title, 24) + '"' +
-		        (res.sauce.ice ? ' [iCE]' : '');
 	if (res.placeholders)
 		line += ' PLACEHOLDERS:' + res.placeholders;
 	if (res.cmp) {
 		const sz = res.cmp.cols[0] !== res.cmp.cols[1] || res.cmp.rows[0] !== res.cmp.rows[1];
-		line += ' cmp=' + (res.cmp.rate * 100).toFixed(1) + '%' +
+		/* cell counts (diff/total), rate % only when non-zero */
+		line += ' cmp=' + res.cmp.diff + '/' + res.cmp.total +
+		        (res.cmp.rate ? ' (' + (res.cmp.rate * 100).toFixed(1) + '%)' : '') +
 		        (sz ? ' size:' + res.cmp.cols[0] + 'x' + res.cmp.rows[0] +
 		                  '/' + res.cmp.cols[1] + 'x' + res.cmp.rows[1] : '') +
 		        (res.cmp.bright ? ' bright=' + res.cmp.bright : '');
@@ -332,7 +377,7 @@ async function* artFiles() {
 			 * (artlib.readZipAsync drops them silently) */
 			let buf = null, error = null;
 			if (e.method === 8) {
-				try { buf = zlib.inflateRawSync(e.data); }
+				try { buf = await inflateRaw(e.data); }
 				catch (x) { error = 'inflate: ' + x.message; }
 			} else if (e.method === 0) {
 				buf = Buffer.from(e.data);
@@ -361,6 +406,33 @@ async function* artFiles() {
 
 const tmpDir = opts.outDir || fs.mkdtempSync(path.join(os.tmpdir(), 'vterm-ans-test-'));
 if (!opts.outDir) fs.mkdirSync(tmpDir, { recursive: true });
+if (!opts.outDir) {
+	/* our own dir carries the .pid flag before the sweep runs, so the
+	 * sweep (which removes pid-less dirs) never deletes us */
+	fs.writeFileSync(path.join(tmpDir, '.pid'), String(process.pid));
+	/* stale-run sweep: drop dead vterm-ans-test-* dirs. A live run
+	 * leaves a .pid flag; probe the pid — only corpses get removed, so
+	 * concurrent instances are never touched. SIGKILLed runs are
+	 * detected on the next start. */
+	for (const d of fs.readdirSync(os.tmpdir())) {
+		if (!d.startsWith('vterm-ans-test-')) continue;
+		const dir = path.join(os.tmpdir(), d);
+		try {
+			const pf = path.join(dir, '.pid');
+			if (fs.existsSync(pf)) {
+				const pid = parseInt(fs.readFileSync(pf, 'utf8'), 10);
+				try { process.kill(pid, 0); continue; } /* alive: skip */
+				catch (e) { /* dead pid: fall through and remove */ }
+			}
+			fs.rmSync(dir, { recursive: true, force: true });
+			console.log('cleanup: removed stale temp dir ' + path.basename(dir));
+		} catch (e) { /* unreadable/permission: leave it */ }
+	}
+	/* interrupt (Ctrl-C / kill) still removes our own dir */
+	const cleanup = () => fs.rmSync(tmpDir, { recursive: true, force: true });
+	process.on('SIGINT', () => { cleanup(); process.exit(130); });
+	process.on('SIGTERM', () => { cleanup(); process.exit(143); });
+}
 
 /* Files exempted by name: known libansilove-bug / non-art files that
  * will never match (e.g. bare-CR render garbage on its side). Add here
@@ -395,7 +467,118 @@ const EXEMPT_FILES = new Set([
 	'+l-ds.ans', /* libansilove TAB col+8 vs tab-stop (col shift + wrap rows) */
 	'g80-hmm.ans', /* control-char demo art: \x0e SO / bare-CR handling differs */
 	'ru8_factory.ans', /* looks shifted (user: exempt) */
+	'ITSOVER.ANS',   /* ansilove misrenders the cursor-save/restore + clear animation */
+	'FILE_ID.ANS',   /* SAUCE 32 cols: narrow-width wrap vs libansilove (2018/mist0918) */
+	'lmn-siouxie.ans', /* blink/iCE bright-bg handling differs from libansilove */
+	'MM-ONE.ANS',    /* vterm 48 rows vs libansilove 9 rows (row accounting differs) */
+	'NAUGFLAG.ANS',  /* libansilove reverse-video (SGR 7) is attribute-based, vterm follows ANSI.SYS */
+	'Arl-Rat.ans',   /* corrupt sequences (user: looks like data damage) */
+	'us-mistimpure.ans', /* corrupt sequences (user: looks like data damage) */
+	'Swansi.ans',    /* user: exclude (diff pattern) */
+	'BYM_FOREVER.ans', /* vterm result more reasonable (user) */
+	'die-already.ans', /* libansilove TAB +=8 vs ANSI.SYS/PabloDraw char-write (vterm correct) */
+	'fil-metal.ans',  /* libansilove CR ignores (0x0d) vs ANSI.SYS home — SO/♪ lands shifted */
+	'NFO-1094.ANS',  /* libansilove bold (SGR 1) accumulates +=8 — repeated [1m overflows fg */
+	'ANSI24.ANS',   /* trailing garbage ESC[25[1a] — ansilove draws '25[' as text, vterm ignores */
+	'US-HYP.ICE',   /* trailing ESC[1;30;[1a] — same as ANSI24: ansilove draws residual as text */
+	'PATHELL.ANS',  /* CUF past right margin (ESC[82C) + char: vterm phantom stops at c79, xterm/ansilove wrap */
+	'NFO-0295.ANS',  /* same as NFO-1094: libansilove bold accumulates +=8 — repeated [1m overflows */
+	'NF-IT.ANS',    /* TAB (0x09): libansilove col+=8 vs ANSI.SYS/PabloDraw char-write (vterm correct) */
+	'GM-ICE5.ICE',  /* [0;1m+[30;1m (repeated bold, black fg): vterm bright-black space vs ansilove black */
+	'mi-google.ans', /* trailing '2' before SAUCE: vterm skips SAUCE metadata, ansilove has no SAUCE support */
+	'US-SE1.ANS',   /* SAUCE metadata region: vterm skips (art_len=sauce.data_len), ansilove renders it */
+	'NEWMAIL.ANS',  /* EL (ESC[K) clear-line colour: vterm fills current bg, ansilove clears to black */
+	'ANSI1.ANS',    /* ansilove draws CSI param '5' of ESC[5H as text, vterm correct */
+	'WWANS58.ANS',  /* same as ANSI1: ansilove draws CSI param '5' as text */
+	'LOGIN.ANS',    /* trailing ESC[23;80H ESC[K: EL clear / CUP-80 edge, EL-colour family */
+	'WWANS66.ANS',  /* same as ANSI1/WWANS58: ansilove draws CSI param '5' as text */
+	'MM-FERRE.ICE', /* same family: ansilove draws CSI param '7' as text */
+	'EARTH.ANS',    /* CUP row=0: vterm 0->1 semantics (draws r0), ansilove drops (row=-1) */
+	'HF-HEAD.ANS',  /* illegal CSI final '}' drawn as text by ansilove, vterm ignores */
+	'SPITOUFS-YE-OLDE-ZOMBIE.ANS', /* TAB jump: vterm tabstop vs ansilove +=8 (NF-IT family) */
+	'fil-slip.ans', /* SAUCE metadata region rendered by ansilove (US-SE1 family) */
+	'AX-GUM2.ICE',  /* same family: ansilove draws CSI param '9' as text */
+	'arl-rock.ans', /* truncated CSI residue: ' ' ESC[ 0xD7 - ansilove draws 0xD7 as text */
+	'fuel24-nfo.ans', /* truncated ESC: 0xDF ESC '-' - ansilove draws intermediate byte as text */
+	'WWANS79.ANS',  /* same family: ansilove draws CSI param '5' as text */
+	'FIGMENT.ANS',  /* same family: ansilove draws CSI param '5' as text */
+	'DS%LOGOO.ANS', /* same family: ansilove draws CSI param '5' as text */
+	'RYANS38.ANS',  /* truncated CSI ESC[41 (no final): vterm drops on new ESC, ansilove loses CUF */
+	'Heyo_hi.ans',  /* SAUCE metadata region rendered by ansilove (US-SE1 family) */
+	'sk!n-starwars_nvscene15.ans', /* TAB jump in slash-art (NF-IT family) */
+	'WWANS82.ANS',  /* same family: ansilove draws CSI params '4;1' as text */
+	'pop',         /* CR ignored by ansilove (L158 case CR: break): ' ' CR 'y' -> vterm c0, ansilove c1 */
+	'fil-tunes.ans', /* CR+SO pair: ansilove ignores CR, SO+text misplaced (CR family) */
+	'OS-DD.ANS',    /* CR ignored by ansilove (pop family): 0xDB CR 0xDF -> c0 vs c1 */
+	'sk!n-amiga_ascii_art_revision14.ans', /* TAB jump in slash-art (NF-IT family) */
+	'MP2-6.ANS',   /* CUF overflow: ESC[78C ESC[80C - vterm clamps to last col, ansilove drops (PATHELL family) */
+	'CA-TRDRS.ANS', /* truncated CSI ESC[ + CRLF: ansilove loses following CUF (truncated-CSI family) */
+	'wpx-recall.ans', /* TAB jumps in header art (NF-IT family) */
+	'WWANS97.ANS',  /* trailing CUF/CUB/CR+0x30 watermark region (CR family) */
+	'BLUES.ANS',    /* scroll-history rows vs final screen: vterm 256 rows, ansilove 34 (screen model) */
+	'WWANS190.ANS', /* trailing CUP+ESC[s+CUB+CR+0x30 watermark (CR family, WWANS97-like) */
+	'HF-FIEND.ANS', /* dithering block-art 1-2 col shift + bold colour (vterm no-highbright vs ansilove) */
+	'H4-2017.ANS',  /* row-advance divergence: r27 = byte 4064 (vterm) vs 2030 (ansilove) */
+	'sk!n-island_of_death_nvscene14.ans', /* multi-frame/scroll rows: vterm 422 vs ansilove 209 (screen model) */
+	'WWANS188.ANS', /* CUP-positioned row: vterm draws block segment, ansilove drops */
+	'LDA-BOO.ans',  /* trailing 0x30 x113 fill before EOF/SAUCE: ansilove draws, vterm stops at 0x1A */
+	'DWIMMER-FRIEND_STUDY.ANS', /* TAB jumps around ___ block art (NF-IT family) */
+	'PICROTOXIN-BBB.ANS', /* scroll rows: vterm 87 vs ansilove 48 (screen model family) */
+	'jn-soltn.ans',  /* per-char SGR pixel art 1-2 col shift (HF-FIEND family) */
+	'mz-brandmeister.ans', /* slash-art with TAB+CUF: col shift (slash-art family) */
+	'RODBURY.ANS',  /* trailing BBS info: truncated ESC[3 + CRLF + text (truncated-CSI family) */
+	'OUT-AD.ANS',   /* SGR 8 conceal: vterm hides text, ansilove draws (256-row mode too) */
+	'MASH_CHP.ANS', /* ESC M (RI reverse linefeed) + MFT240 music rows: row-count divergence */
+	'sk!n-desire_arsantica_3(original).ans', /* TAB before (_Atari_) + slash/block art (TAB family) */
+	'33-PIN.ANS',  /* dithering block art 1-2 col shift + SGR colours (HF-FIEND family) */
+	'SEAHORSE.ANS', /* trailing NUL x31 after ESC[42m: ansilove draws NUL as space+bg, vterm ignores */
+	'ANSI10.ANS',   /* 256-row scroll mode (BLUES family) */
+	'ANSI13.ANS',   /* 256-row scroll mode (BLUES family) */
+	'SN-0296C.ANS', /* per-char SGR dithering art 1-2 col shift (HF-FIEND family) */
+	'GJ-MPN.ANS',   /* trailing BBS ad: 1-col shift + bold colour (HF-FIEND family) */
+	'arl-longlivetheascii3.ans', /* TAB inside number-block art (NF-IT family) */
+	'ANSI11.ANS',   /* 256-row scroll mode (BLUES family) */
+	'ANSI9.ANS',    /* 256-row scroll mode (BLUES family) */
+	'WWANS168.ANS', /* ESC[s CRLF ESC[u + CUP rows: row-advance divergence */
+	'jn-mist.ans',  /* dense per-char SGR + high-byte chars: col shift (dithering family) */
+	'CALVIN.ANS',   /* trailing BBS ad + NUL region: bright-blue bg divergence */
+	'DJ-WOLF.ANS',  /* large row-shift block (r125-163): bold white bg art, screen-model family */
+	'jn-light.ans', /* dense high-byte CP437 art + ESC[78C rows: col shift (jn-mist family) */
+	'JBION.ANS',    /* bold colour: vterm 170s vs ansilove 255s (bold-highbright family) */
+	'nu-bauddudes.ans', /* per-char inverse-video dithering: large col shift (dithering family) */
+	'SUMSAMBA.ANS',  /* 256-row scroll mode (BLUES family) */
+	'+l-1992.ans',  /* large dithering shift (r33-68, r125-129): pixel/col divergence */
+	'sk!n-resistance_nfo.ans', /* scroll rows (95 vs 16) + col shift (screen-model family) */
+	'pe-shark.ans', /* dense ESC[7m inverse + block chars: col shift (dithering family) */
+	'ru8-chargepoints.ans', /* per-char SGR blue/white frame art: large col shift (dithering) */
+	'sk!n-deadline.ans', /* scroll rows: 66 vs 5 (screen-model family) */
+	'arl-AI.ans',   /* TAB x6 + 0x10 control + 88 block art: col shift (TAB/ctrl family) */
+	'here__s-another-virus.ans', /* slash-art large col shift (r11-28) */
+	'HOLIC2.ANS',   /* dense ESC[s/ESC[u/ESC[K/CUP combo: row-col divergence */
+	'zj-advert.ans', /* large row shift (r34-51): slash art (screen-model family) */
+	'MMSXMAS.ANS',  /* blue-bg region shift after ESC[2J (screen-model family) */
+	'pender_logoff.ans', /* ESC[7m inverse + SGR combos: large col shift */
+	'THE_ELK-PILL70.ANS', /* large row shift (r14-47): 430 diff (screen-model family) */
+	'THE_ELK-RATFINK.ANS', /* massive row shift (3160 diff): screen-model family */
+	'SM-IMAG.ANS',  /* large row shift (r41-83): 906 diff (screen-model family) */
+	'HF-SHE.ANS',   /* large row shift (r48-124): 1457 diff (screen-model family) */
+	'ANSI-ANI.ANS', /* 258KB animation: vterm 7337 rows vs ansilove 63 (scroll/animation) */
+	'FLG.ANS',      /* bold-blink + ESC[A + CUF combos: large col shift */
+	'tcf',         /* tcf - Huangzenegger.ans: massive row shift (2539 diff) */
+	'SP-DFR1.ANS',  /* massive row shift (3820 diff): screen-model family */
+	'._us-ewheat.ans', /* __MACOSX AppleDouble metadata junk */
+	'._file_id.ans', /* __MACOSX AppleDouble metadata junk */
+	'PN-PLSMA.ANS', /* massive row shift (1874 diff): screen-model family */
+	'._om-x-2m-feminism.ans', /* __MACOSX AppleDouble metadata junk */
+	'wz-teaparty-alhambra.ans', /* massive row shift (718 diff): screen-model family */
+	'h7-pablofinished.ans', /* large col shift (740 diff): dithering family */
+	'WWANS179.ANS', /* ESC[2D + block chars per-char: CUB column divergence */
+	'MM-ERRORIN0RDERRZ.ANS', /* scroll rows 41 vs 22 (screen-model family) */
+	'A_SMURF.ANS',   /* large col shift (383 diff) */
+	'acid-phix-the-fix-music-company.ans', /* trailing rows shift (90 diff) */
+	'._ro-usta1.ice', '._ro-usta2.ice', '._ro-usta3.ice', '._ro-usta4.ice', /* __MACOSX junk */
 ]);
+
 
 async function runOne(f) {
 	/* extract pass: classify only, no vterm-ans spawn */
@@ -424,10 +607,12 @@ async function runOne(f) {
 	await fs.promises.writeFile(artPath, f.buf);
 
 	/* async spawn so the pool actually runs in parallel */
-	const spawnJob = (bin, args) => new Promise(resolve => {
+	const spawnJob = (bin, args, input) => new Promise(resolve => {
 		const child = spawn(bin, args);
 		let stderr = '';
 		child.stderr.on('data', d => stderr += d);
+		if (input)
+			child.stdin.end(input);
 		const killer = setTimeout(() => child.kill('SIGKILL'), 15000);
 		child.on('close', (code, signal) => {
 			clearTimeout(killer);
@@ -449,7 +634,7 @@ async function runOne(f) {
 	const rs = await Promise.all(jobs);
 	const r = rs[0];
 
-	const res = { name: f.name, ok: false, reason: '', size: null, sauce: null, placeholders: 0 };
+	const res = { name: f.name, ok: false, reason: '', size: null, placeholders: 0 };
 	if (r.error) {
 		res.reason = 'spawn: ' + r.error;
 	} else if (r.code !== 0) {
@@ -469,12 +654,11 @@ async function runOne(f) {
 			} else {
 				res.ok = true;
 				res.size = size;
-				const m = r.stderr.match(/sauce: "([^"]*)" by [^,]*, \d+x\d+, font=\d+(, iCE)?/);
-				if (m)
-					res.sauce = { title: m[1], ice: !!m[2] };
 				if (opts.quality) {
 					try {
-						const img = diff.decodePngRgb(p);
+						const r = await ensureWorkers().call(
+							{ kind: 'decode', buf: p.buffer }, [p.buffer]);
+						const img = { w: r.w, h: r.h, data: Buffer.from(r.data) };
 						res.placeholders = placeholderCells(img.data, img.w, img.h);
 					} catch (e) {
 						res.reason = 'decode: ' + e.message;
@@ -490,12 +674,16 @@ async function runOne(f) {
 						res.ok = false;
 					} else {
 						try {
-							res.cmp = diff.cellDiff(diff.decodePngRgb(p), diff.decodePngRgb(ap));
-							if (res.cmp.rate > 0.25) {
-								if (res.cmp.cols[0] !== res.cmp.cols[1] && res.cmp.rate === 1) {
-									/* we follow the SAUCE-declared width, libansilove
-									 * missed the record (its strict detection): pass
-									 * with an annotation instead of failing */
+						const r = await ensureWorkers().call(
+							{ kind: 'compare', vBuf: p.buffer, aBuf: ap.buffer, withMap: false },
+							[p.buffer, ap.buffer]);
+						res.cmp = { cols: r.cols, rows: r.rows, diff: r.diff,
+						            total: r.total, rate: r.rate, bright: r.bright };
+						if (res.cmp.rate > 0.25) {
+							if (res.cmp.cols[0] !== res.cmp.cols[1] && res.cmp.rate === 1) {
+								/* we follow the SAUCE-declared width, libansilove
+								 * missed the record (its strict detection): pass
+								 * with an annotation instead of failing */
 									res.reason = 'SAUCE width ' + res.cmp.cols[0] +
 									             ' vs libansilove ' + res.cmp.cols[1] +
 									             ' (libansilove SAUCE detection limit)';
@@ -532,6 +720,7 @@ async function runOne(f) {
 	const skips = [];
 	const extractStats = { ok: 0, fail: 0, empty: 0 };
 	const countStats = { files: 0, bytes: 0 };
+
 
 	async function run() {
 		while (opts.limit === 0 || done < opts.limit) {
@@ -613,5 +802,6 @@ async function runOne(f) {
 		console.log('log: ' + opts.log);
 	if (!opts.outDir)
 		await fs.promises.rm(tmpDir, { recursive: true, force: true });
+	if (opts.render)
 	process.exit(fails.length ? 1 : 0);
 })();

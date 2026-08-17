@@ -171,39 +171,29 @@ CRLF 文件不受影响（\r 已归列）。
 
 **验证**：SC-ICE1/2/6 全部 0.0%；LD-COD 回归 0.0%。
 
-## SAUCE 记录字段偏移修复（sauce.c）
+## SAUCE 解析固定官方偏移（sauce.c，删除 version 检测）
 
 **现象**：BS-SOFT!.ANS（1994 lbo-r4）100% FAIL——我们 79 列 vs
-libansilove 80 列。
+libansilove 80 列（这是 libansilove 漏读 SAUCE 宽度，非我们解析错）。
+另 009.ans（2024）裸跑渲染 60 列宽（真实 80 列）。
 
-**根因**：vterm-ans 的 sauce_parse 假设"无 version"布局（ID 后直接
-title，title@7）；标准 SAUCE 记录有 version 字段（ID(7)+version(2)
-+title@9...）——偏移错位 2（title 混入 version "00"）。
+**根因**：早期假设存在"无 version 布局"（title@5/7），加了 version
+检测 `r[7:9]`——但官方 ACiD rev5 布局是 `ID(5)+Version(2)@5+Title@7`，
+r[7:9] 是 **title 前两字符**。title 以 "00" 开头时误触发偏移 +2，
+整条记录错位（009.ans：title"009"→"9"、cols 80→60）。
 
-**修复**：`sauce.c` 双布局兼容——检测 r[7:9] 是否 ASCII 数字
-（version）决定偏移 `7+v`（v=2 标准 / v=0 无 version）。
+**修复**（`sauce.c`）：删除 version 检测，固定官方偏移
+（title@7、cols@96、rows@98、TFlags@105）。`sauce_locate` 已要求
+"SAUCE00/01" 前缀，"无 version 记录"不可能到达解析。
 
-**验证**：标准 SAUCE 测试文件解析正确（"TEST" 90x25）；BS-SOFT!
-（无 version 异常记录，截断 121/128 字节）回退正确（79 列）；
-vterm-test 231 passed。
+**验证**：42,158 个素材文件两种解析对比——42,156 完全一致（v 检测
+从未起作用，全走官方 v=0），仅 2 个 "00" 开头 title 文件不同且官方
+全部修对（CRS-CCL title "0j"→"000j"、009 title "9"→"009" cols
+60→80）；三个历史案例（HO-COLLY/ANSI0197/BS-SOFT!）官方解析全部
+正确；vterm-test 夹具同步改回官方布局；vterm-test 231 passed。
 
-**说明**：ansilove 对标准 SAUCE 也有错位（ID 读 5 字节 vs 7）——
-BS-SOFT! 类（异常 SAUCE 布局）仍与 libansilove 不一致，属豁免类。
-
-## SAUCE version 检测精确化（数字开头 title 误判）
-
-**现象**：HO-COLLY.ANS（1996 tl199610）我们 25 列 vs 80——宽度
-不对。
-
-**根因**：title 以数字开头（"1096 Ascii Colly"）——version 检测
-（r[7:9] 任意数字）误判为"标准布局"——cols 读到错位值 25。
-实际是无 version 布局（title 从 7）。
-
-**修复**（`sauce.c`）：version 精确匹配 "00"/"01"（标准 SAUCE
-版本）——数字开头的 title 不再误判。
-
-**验证**：HO-COLLY 975=975 行（0.0%）；标准 SAUCE 测试正常
-（"TEST" 90x25）；回归全过。
+**说明**：ansilove 对部分 SAUCE 记录漏检宽度（BS-SOFT! 79 列）——
+属 libansilove 检测问题，非我们解析错误。
 
 ## PabloDraw 24-bit 色（\x1b[0/1;R;G;Bt）+ rows cap 8192
 
@@ -235,28 +225,14 @@ BS-SOFT! 类（异常 SAUCE 布局）仍与 libansilove 不一致，属豁免类
 
 **现象**：M2-SCR.ANS（1997 fsn-0397）我们 21 列 vs 80——宽度不对。
 
-**根因**：无 version SAUCE 记录 cols 读到垃圾 21（两边解析一致但
-不是真实列宽——art 是 80 列）。
+**根因**：损坏记录 cols 字段是垃圾值（21，非真实列宽——art 是
+80 列）。
 
 **修复**（`sauce.c`）：cols 校验范围 40..200（BBS art 40-200 列，
 <40 不是真实 art 宽度）→ 回退默认 80。
 
 **验证**：M2-SCR 0.0%；BS-SOFT!（真实 79 列）回归正常（40..200
 内保留）。
-
-## SAUCE version 只认 "00"（数字开头 title）
-
-**现象**：ANSI0197.ANS（1997 charm03）我们 49 列 vs 80——宽度
-不对。
-
-**根因**：title 以数字开头（"01/97 AnsiCluster" 日期）——version
-检测（"00"/"01"）误判 "01" 为标准布局——cols 读错位 49。
-
-**修复**（`sauce.c`）：version 只匹配 "00"（标准 SAUCE 几乎全是
-v00）——"01"/"10" 等数字开头 title 不再误判。
-
-**验证**：ANSI0197 572=572 行（0.0%）；标准 "00" SAUCE 测试正常；
-HO-COLLY/GN-COL#1 回归全过。
 
 ## 空 SAUCE 记录回退（title 全 \x00）
 

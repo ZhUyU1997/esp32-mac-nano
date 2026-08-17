@@ -1,5 +1,10 @@
 /* vterm-ans — ANSI art to image converter (libansilove-style).
  *
+ * Debug modes:
+ *   --cell R,C      reverse-locate: report the input byte that last wrote
+ *                   cell (R,C) (one process, real state machine)
+ *   --trace-cells F write row,col,byte_offset per visible char to F
+ *
  * Feeds a BBS-era art file (.ans/.ice/.nfo, CP437 bytes) through the
  * vendored libvterm parser, renders the whole grid with the existing
  * term_render pipeline and writes a PNG (or BMP). Uses the SAUCE record
@@ -25,8 +30,14 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
 
-#include <zlib.h>
+#include <png.h>
+#include <unistd.h>
+#include <sys/wait.h>
+#include <limits.h>
+#include <time.h>
+
 
 #include "vterm.h"
 #include "term_render.h"
@@ -278,35 +289,6 @@ static int write_bmp(const char *path, const uint32_t *px, int w, int h, int xsc
 	return 0;
 }
 
-static uint32_t crc32_table[256];
-static void crc32_init(void)
-{
-	for (uint32_t i = 0; i < 256; i++) {
-		uint32_t c = i;
-		for (int k = 0; k < 8; k++)
-			c = (c & 1) ? 0xEDB88320u ^ (c >> 1) : c >> 1;
-		crc32_table[i] = c;
-	}
-}
-
-static void png_chunk(FILE *f, const char type[4], const uint8_t *data, uint32_t n)
-{
-	uint8_t len[4] = { (uint8_t)(n >> 24), (uint8_t)(n >> 16), (uint8_t)(n >> 8), (uint8_t)n };
-	fwrite(len, 1, 4, f);
-	fwrite(type, 1, 4, f);
-	if (n)
-		fwrite(data, 1, n, f);
-	/* CRC-32 over the type + data */
-	uint32_t crc = 0xFFFFFFFFu;
-	for (int i = 0; i < 4; i++)
-		crc = crc32_table[(crc ^ (uint8_t)type[i]) & 0xFF] ^ (crc >> 8);
-	for (uint32_t i = 0; i < n; i++)
-		crc = crc32_table[(crc ^ data[i]) & 0xFF] ^ (crc >> 8);
-	crc ^= 0xFFFFFFFFu;
-	uint8_t cb[4] = { (uint8_t)(crc >> 24), (uint8_t)(crc >> 16), (uint8_t)(crc >> 8), (uint8_t)crc };
-	fwrite(cb, 1, 4, f);
-}
-
 static int write_png(const char *path, const uint32_t *px, int w, int h, int xscale)
 {
 	FILE *f = fopen(path, "wb");
@@ -315,59 +297,46 @@ static int write_png(const char *path, const uint32_t *px, int w, int h, int xsc
 		return -1;
 	}
 	int out_w = w * xscale;
-	/* raw scanlines: 1 filter byte + 3 bytes per pixel */
-	size_t stride = (size_t)out_w * 3 + 1;
-	uint8_t *raw = malloc(stride * (size_t)h);
+
+	png_structp png = png_create_write_struct(PNG_LIBPNG_VER_STRING, NULL, NULL, NULL);
+	png_infop info = png_create_info_struct(png);
+	if (!png || !info) {
+		png_destroy_write_struct(&png, &info);
+		fclose(f);
+		return -1;
+	}
+	if (setjmp(png_jmpbuf(png))) {
+		png_destroy_write_struct(&png, &info);
+		fclose(f);
+		return -1;
+	}
+
+	png_init_io(png, f);
+	png_set_IHDR(png, info, out_w, h, 8, PNG_COLOR_TYPE_RGB,
+	             PNG_INTERLACE_NONE, PNG_COMPRESSION_TYPE_DEFAULT,
+	             PNG_FILTER_TYPE_DEFAULT);
+	png_write_info(png, info);
+
 	uint8_t *row = malloc((size_t)out_w * 3);
-	if (!raw || !row) {
-		free(raw);
-		free(row);
+	if (!row) {
+		png_destroy_write_struct(&png, &info);
 		fclose(f);
 		return -1;
 	}
 	for (int y = 0; y < h; y++) {
-		raw[y * stride] = 0; /* filter: none */
 		px_row(px + (size_t)y * w, w, xscale, row);
-		memcpy(raw + y * stride + 1, row, (size_t)out_w * 3);
+		png_write_row(png, row);
 	}
-	uLongf clen = compressBound((uLong)(stride * (size_t)h));
-	uint8_t *cdata = malloc(clen);
-	if (!cdata) {
-		free(raw);
-		free(row);
-		fclose(f);
-		return -1;
-	}
-	if (compress2(cdata, &clen, raw, (uLong)(stride * (size_t)h), 9) != Z_OK) {
-		free(raw);
-		free(row);
-		free(cdata);
-		fclose(f);
-		return -1;
-	}
-	free(raw);
 	free(row);
-
-	static const uint8_t sig[8] = { 0x89, 'P', 'N', 'G', '\r', '\n', 0x1A, '\n' };
-	fwrite(sig, 1, 8, f);
-	uint8_t ihdr[13];
-	memset(ihdr, 0, sizeof(ihdr));
-	ihdr[0] = (uint8_t)(out_w >> 24); ihdr[1] = (uint8_t)(out_w >> 16);
-	ihdr[2] = (uint8_t)(out_w >> 8);  ihdr[3] = (uint8_t)out_w;
-	ihdr[4] = (uint8_t)(h >> 24);     ihdr[5] = (uint8_t)(h >> 16);
-	ihdr[6] = (uint8_t)(h >> 8);      ihdr[7] = (uint8_t)h;
-	ihdr[8] = 8;  /* bit depth */
-	ihdr[9] = 2;  /* colour type: truecolour */
-	png_chunk(f, "IHDR", ihdr, sizeof(ihdr));
-	png_chunk(f, "IDAT", cdata, (uint32_t)clen);
-	png_chunk(f, "IEND", NULL, 0);
-	free(cdata);
+	png_write_end(png, info);
+	png_destroy_write_struct(&png, &info);
 	fclose(f);
 	return 0;
 }
 
-/* ---- main -------------------------------------------------------------- */
-
+static int render_file(const char *in_path, const char *out_path,
+                       int cols_override, bool ice, bool aspect,
+                       bool utf8_in, const char *trace_path, int qr, int qc);
 static void usage(const char *prog)
 {
 	fprintf(stderr,
@@ -376,7 +345,10 @@ static void usage(const char *prog)
 	    "  --ice     force iCE colours (SGR 5 blink -> bright background)\n"
 	    "  --cols N  override the grid width (default: SAUCE cols or 80)\n"
 	    "  --aspect  2x horizontal stretch (8x16 cells look square-ish)\n"
-	    "  --utf8    input is already UTF-8 (no CP437 conversion)\n",
+	    "  --utf8    input is already UTF-8 (no CP437 conversion)\n"
+	    "  --trace-cells FILE\n"
+	    "            write row,col,byte_offset per visible char (debug)\n"
+	    "  --cell R,C  reverse-locate the input byte that last wrote this cell\n",
 	    prog);
 }
 
@@ -384,12 +356,21 @@ int main(int argc, char **argv)
 {
 	const char *out_path = NULL;
 	const char *in_path = NULL;
+	const char *trace_path = NULL;
 	bool ice = false, aspect = false, utf8_in = false;
 	int cols_override = 0;
+	int qr = -1, qc = -1;
 
 	for (int i = 1; i < argc; i++) {
 		if (!strcmp(argv[i], "-o") && i + 1 < argc) {
 			out_path = argv[++i];
+		} else if (!strcmp(argv[i], "--trace-cells") && i + 1 < argc) {
+			trace_path = argv[++i];
+		} else if (!strcmp(argv[i], "--cell") && i + 1 < argc) {
+			if (sscanf(argv[++i], "%d,%d", &qr, &qc) != 2) {
+				usage(argv[0]);
+				return 1;
+			}
 		} else if (!strcmp(argv[i], "--ice")) {
 			ice = true;
 		} else if (!strcmp(argv[i], "--aspect")) {
@@ -410,6 +391,15 @@ int main(int argc, char **argv)
 		return 1;
 	}
 
+	return render_file(in_path, out_path ? out_path : "", cols_override,
+	                  ice, aspect, utf8_in, trace_path, qr, qc);
+}
+
+/* ---- render one file ------------------------------------------------ */
+static int render_file(const char *in_path, const char *out_path,
+                       int cols_override, bool ice, bool aspect,
+                       bool utf8_in, const char *trace_path, int qr, int qc)
+{
 	size_t len;
 	uint8_t *buf = read_file(in_path, &len);
 	if (!buf)
@@ -497,10 +487,97 @@ int main(int argc, char **argv)
 			return 1;
 		}
 		cp437_to_utf8(buf, art_len, utf8, utf8_len);
+		if (trace_path) {
+			/* --trace-cells: push one CP437 char at a time and record the
+			 * cursor position before each visible char, so a rendered cell
+			 * maps back to its byte offset in the source file. vterm
+			 * reparse per char is slow but this is a debug path. */
+			FILE *tf = fopen(trace_path, "w");
+			if (!tf) {
+				fprintf(stderr, "vterm-ans: cannot open %s: %s\n",
+				        trace_path, strerror(errno));
+				free(buf);
+				vterm_free(vt);
+				return 1;
+			}
+			VTermState *st = vterm_obtain_state(vt);
+			for (size_t i = 0; i < art_len; i++) {
+				VTermPos pos;
+				vterm_state_get_cursorpos(st, &pos);
+				if (buf[i] >= 0x20)
+					fprintf(tf, "%d,%d,%zu\n", pos.row, pos.col, i);
+				uint32_t cp = cp437_to_unicode(buf[i]);
+				char ub[4];
+				size_t n = 0;
+				if (cp < 0x80)
+					ub[n++] = (char)cp;
+				else if (cp < 0x800) {
+					ub[n++] = (char)(0xC0 | (cp >> 6));
+					ub[n++] = (char)(0x80 | (cp & 0x3F));
+				} else {
+					ub[n++] = (char)(0xE0 | (cp >> 12));
+					ub[n++] = (char)(0x80 | ((cp >> 6) & 0x3F));
+					ub[n++] = (char)(0x80 | (cp & 0x3F));
+				}
+				vterm_input_write(vt, ub, n);
+			}
+			fclose(tf);
+		}
+		if (qr >= 0) {
+			/* --cell R,C: reverse-locate. Push one char at a time, watch
+			 * the target cell with the real state machine, and report the
+			 * last input byte that changed it (covers overwrites/clears:
+			 * the last change is the final content). buf is still alive
+			 * here. */
+			VTermPos pos = { .row = qr, .col = qc };
+			VTermScreenCell prev, cur;
+			int last_off = -1;
+			vterm_screen_get_cell(scr, pos, &prev);
+			for (size_t i = 0; i < art_len; i++) {
+				uint32_t cp = cp437_to_unicode(buf[i]);
+				char ub[4];
+				size_t n = 0;
+				if (cp < 0x80)
+					ub[n++] = (char)cp;
+				else if (cp < 0x800) {
+					ub[n++] = (char)(0xC0 | (cp >> 6));
+					ub[n++] = (char)(0x80 | (cp & 0x3F));
+				} else {
+					ub[n++] = (char)(0xE0 | (cp >> 12));
+					ub[n++] = (char)(0x80 | ((cp >> 6) & 0x3F));
+					ub[n++] = (char)(0x80 | (cp & 0x3F));
+				}
+				vterm_input_write(vt, ub, n);
+				vterm_screen_get_cell(scr, pos, &cur);
+				if (memcmp(&prev, &cur, sizeof cur) != 0) {
+					last_off = (int)i;
+					prev = cur;
+				}
+			}
+			printf("cell %d,%d last written by byte %d of %zu\n",
+			       qr, qc, last_off, art_len);
+			if (last_off >= 0) {
+				size_t s = last_off > 60 ? last_off - 60 : 0;
+				for (size_t k = s; k < (size_t)last_off + 6 && k < art_len; k++) {
+					uint8_t c = buf[k];
+					fputc(c == 27 ? 'E' : (c >= 32 && c < 127 ? c : '.'), stdout);
+				}
+				printf("\n");
+			}
+			free(buf);
+			vterm_free(vt);
+			return 0;
+		}
 		free(buf);
 	}
-	vterm_input_write(vt, utf8, utf8_len);
+	if (!trace_path)
+		vterm_input_write(vt, utf8, utf8_len);
 	free(utf8);
+	if (trace_path) {
+		/* trace mode: no render, the mapping is the output */
+		vterm_free(vt);
+		return 0;
+	}
 	vterm_screen_flush_damage(scr);
 
 	/* content box: full declared width, height to the last content row.
@@ -532,7 +609,6 @@ int main(int argc, char **argv)
 		img_h = ctx.damage_row;
 
 	/* render the grid */
-	crc32_init();
 	uint32_t *px = calloc((size_t)rows * cols * TERM_CELL_W * TERM_CELL_H,
 	                      sizeof(uint32_t));
 	if (!px) {

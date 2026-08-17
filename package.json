@@ -5,6 +5,7 @@
     "idf-mcp": "pnpm --dir idf-mcp start"
   },
   "dependencies": {
-    "node-pty": "^1.1.0"
+    "node-pty": "^1.1.0",
+    "sharp": "^0.35.3"
   }
 }

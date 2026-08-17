@@ -534,7 +534,26 @@ static int on_control(unsigned char control, void *user)
     break;
 
   case 0x0e: // LS1 - ECMA-48 8.3.76
+#ifdef VTERM_ANSI_SYS_MODE
+    /* ANSI.SYS (chrout) has no SO handling: 0x0e falls through to the
+     * character write path and draws CP437 0x0E (U+266A ♪). BBS-era and
+     * modern PabloDraw art use it as a printable glyph; the VT100 LS1
+     * (switch to G1 charset) semantics would swallow it. */
+    {
+      const uint32_t glyph = 0x266A;
+      if(state->at_phantom || state->pos.col + 1 > THISROWWIDTH(state)) {
+        linefeed(state);
+        state->pos.col = 0;
+        state->at_phantom = 0;
+      }
+      putglyph(state, &glyph, 1, state->pos);
+      state->pos.col++;
+      if(state->pos.col >= THISROWWIDTH(state))
+        state->at_phantom = 1;
+    }
+#else
     state->gl_set = 1;
+#endif
     break;
 
   case 0x0f: // LS0 - ECMA-48 8.3.75
@@ -1435,6 +1454,8 @@ static int on_csi(const char *leader, const long args[], int argcount, const cha
       if(CSI_ARG(args[0]) == 0) {
         attr = VTERM_ATTR_BACKGROUND;
         state->pen.bg = col;
+        /* PabloDraw 24-bit bg: blink (SGR 5) drops it (see pen.c) */
+        state->pen.bg_from_t = 1;
       } else if(CSI_ARG(args[0]) == 1) {
         attr = VTERM_ATTR_FOREGROUND;
         state->pen.fg = col;

@@ -42,3 +42,12 @@ idf-mcp/dist/
 scripts/art/packs/
 scripts/art/*/
 !scripts/art/README.md
+
+# xmake build output
+build/
+
+# compare / test outputs
+compare.png
+art-compare*.log
+art-full.out
+art-diff

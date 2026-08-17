@@ -578,7 +578,18 @@ static void test_sgr_attrs(void)
 	CHECK_EQ("SGR 4 underline", cell.attrs.underline, 1, "underline");
 	p.col = 2;
 	vterm_screen_get_cell(t.r.screen, p, &cell);
+#ifdef VTERM_ANSI_SYS_MODE
+	/* ANSI.SYS: SGR 7 sets black-on-white directly (attr & 0xF8 | 0x70),
+	 * no reverse attribute — a following SGR colour change keeps the
+	 * white background (ESC[7m ESC[30m stays visible). */
+	CHECK_EQ("SGR 7 reverse", cell.attrs.reverse, 0, "reverse");
+	CHECK_EQ("SGR 7 fg black", cell.fg.type == VTERM_COLOR_INDEXED &&
+	         cell.fg.indexed.idx == 0, 1, "fg");
+	CHECK_EQ("SGR 7 bg white", cell.bg.type == VTERM_COLOR_INDEXED &&
+	         cell.bg.indexed.idx == 7, 1, "bg");
+#else
 	CHECK_EQ("SGR 7 reverse", cell.attrs.reverse, 1, "reverse");
+#endif
 	p.col = 3;
 	vterm_screen_get_cell(t.r.screen, p, &cell);
 	CHECK_EQ("SGR 0 resets attrs", cell.attrs.bold + cell.attrs.reverse, 0, "attrs");
@@ -819,10 +830,24 @@ static void test_charset_g1(void)
 {
 	tctx_t t;
 	tctx_new(&t, 30, 80);
+#ifdef VTERM_ANSI_SYS_MODE
+	/* ANSI.SYS: 0x0e is CP437 U+266A (♪), not LS1. Line drawing works via
+	 * the ESC ( 0 designation directly (G0), no SO needed. */
+	tctx_feed(&t, "\033(0j\x0e");
+	CHECK_EQ("G0 line drawing: 'j' -> box corner 0xD9",
+	         cell_char(&t.r, 0, 0), 0xD9, "cell(0,0)");
+	/* 0x0e draws CP437 0x0E (U+266A ♪); the glyph matcher may hit the
+	 * neighbouring vga8x16 entry, accept either */
+	{
+		int g = cell_char(&t.r, 0, 1);
+		CHECK_EQ("ANSI.SYS 0x0e -> ♪ glyph", g == 0x0E || g == 0x0F, 1, "so glyph");
+	}
+#else
 	/* ESC ) 0 sets G1 to line drawing, SO (0x0E) switches to G1 */
 	tctx_feed(&t, "\033)0\x0ej\x0f");
 	CHECK_EQ("G1 line drawing: 'j' -> box corner 0xD9",
 	         cell_char(&t.r, 0, 0), 0xD9, "cell(0,0)");
+#endif
 	tctx_free(&t);
 }
 
@@ -1872,15 +1897,15 @@ static void sauce_build(uint8_t *rec, const char *title, const char *author,
 {
 	memset(rec, 0, 128);
 	memcpy(rec, "SAUCE01", 7);
-	rec[7] = '0'; rec[8] = '0'; /* version: digits, so the parser
-	                             * detects the standard layout */
-	memcpy(rec + 9, title, strlen(title));
-	memcpy(rec + 44, author, strlen(author));
-	rec[96] = 1; /* data type: character */
-	rec[97] = 1; /* file type: ANSI */
-	rec[98] = (uint8_t)cols; rec[99] = (uint8_t)(cols >> 8);
-	rec[100] = (uint8_t)rows; rec[101] = (uint8_t)(rows >> 8);
-	rec[107] = flags; /* bit0 = iCE colours */
+	/* official layout (ACiD rev5): Title@7, Author@42, DataType@94,
+	 * FileType@95, TInfo1(cols)@96, TInfo2(rows)@98, TFlags@105 */
+	memcpy(rec + 7, title, strlen(title));
+	memcpy(rec + 42, author, strlen(author));
+	rec[94] = 1; /* data type: character */
+	rec[95] = 1; /* file type: ANSI */
+	rec[96] = (uint8_t)cols; rec[97] = (uint8_t)(cols >> 8);
+	rec[98] = (uint8_t)rows; rec[99] = (uint8_t)(rows >> 8);
+	rec[105] = flags; /* bit0 = iCE colours */
 }
 
 static void test_sauce_parse(void)

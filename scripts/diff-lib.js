@@ -14,6 +14,8 @@
  * renderers draw the same row grid.
  */
 const zlib = require('zlib');
+let sharp = null;
+try { sharp = require('sharp'); } catch (e) { /* optional accel */ }
 
 /* CGA / ANSI.SYS palette. libvterm's pen.c now renders the same table,
  * so both sides quantise with the same colours. */
@@ -104,6 +106,19 @@ function decodePngRgb(p) {
 	return { w, h, data: img };
 }
 
+/* async decode with libvips (sharp) when available: ~5x faster than the
+ * pure-JS decodePngRgb and, being async, does not block the event loop
+ * of the worker pool. Falls back to the sync decoder otherwise. */
+async function decodePngRgbAsync(p) {
+	if (sharp) {
+		try {
+			const { data, info } = await sharp(p).raw().toBuffer({ resolveWithObject: true });
+			return { w: info.width, h: info.height, data };
+		} catch (e) { /* malformed PNG: fall through to the JS decoder */ }
+	}
+	return decodePngRgb(p);
+}
+
 function nearestIdx(r, g, b, pal) {
 	let bi = 0, bd = Infinity;
 	for (let i = 0; i < 16; i++) {
@@ -114,13 +129,29 @@ function nearestIdx(r, g, b, pal) {
 	return bi;
 }
 
+/* quantiser with a per-image colour cache: rendered ANSI pixels are a
+ * small set of repeated colours, so the 16-way distance search runs once
+ * per unique RGB instead of once per pixel (cellDiff hot path) */
+function makeQuantizer(pal) {
+	const cache = new Map();
+	return (r, g, b) => {
+		const key = (r << 16) | (g << 8) | b;
+		let idx = cache.get(key);
+		if (idx === undefined) {
+			idx = nearestIdx(r, g, b, pal);
+			cache.set(key, idx);
+		}
+		return idx;
+	};
+}
+
 /* the two most frequent palette indices in an 8x16 cell (= fg and bg) */
-function cellTopIdx(img, pal, x, y) {
+function cellTopIdx(img, q, x, y) {
 	const freq = new Int16Array(16);
 	for (let yy = 0; yy < 16; yy++)
 		for (let xx = 0; xx < 8; xx++) {
 			const i = ((y + yy) * img.w + (x + xx)) * 3;
-			freq[nearestIdx(img.data[i], img.data[i + 1], img.data[i + 2], pal)]++;
+			freq[q(img.data[i], img.data[i + 1], img.data[i + 2])]++;
 		}
 	const order = Array.from({ length: 16 }, (_, i) => i)
 		              .sort((a, b) => freq[b] - freq[a] || a - b);
@@ -150,10 +181,29 @@ function cellDiff(v, a, withMap) {
 	const norm = (i) => i & 7;
 	let diff = 0, bright = 0;
 	const map = withMap ? new Uint8Array(rows * cols) : null;
+	const qv = makeQuantizer(VTERM_PAL), qa = makeQuantizer(ANSI_PAL);
+	const vd = v.data, ad = a.data, vw = v.w, aw = a.w;
 	for (let r = 0; r < rows; r++)
 		for (let c = 0; c < cols; c++) {
-			const vt = cellTopIdx(v, VTERM_PAL, c * 8, r * 16);
-			const at = cellTopIdx(a, ANSI_PAL, c * 8, r * 16);
+			const x0 = c * 8, y0 = r * 16;
+			/* fast reject: cells whose 8x16 raw RGB is byte-identical are
+			 * the same by construction — skip quantisation entirely (most
+			 * cells of a well-aligned pair are identical; bench: 84ms -> 8ms) */
+			let sameBytes = true;
+			for (let y = 0; y < 16 && sameBytes; y++) {
+				const vo = (y0 + y) * vw + x0, ao = (y0 + y) * aw + x0;
+				for (let x = 0; x < 8; x++) {
+					const vi = (vo + x) * 3, ai = (ao + x) * 3;
+					if (vd[vi] !== ad[ai] || vd[vi + 1] !== ad[ai + 1] || vd[vi + 2] !== ad[ai + 2]) {
+						sameBytes = false;
+						break;
+					}
+				}
+			}
+			if (sameBytes)
+				continue;
+			const vt = cellTopIdx(v, qv, x0, y0);
+			const at = cellTopIdx(a, qa, x0, y0);
 			const same = (norm(vt[0]) === norm(at[0]) && norm(vt[1]) === norm(at[1])) ||
 			             (norm(vt[0]) === norm(at[1]) && norm(vt[1]) === norm(at[0]));
 			if (!same) {
@@ -170,4 +220,4 @@ function cellDiff(v, a, withMap) {
 	return res;
 }
 
-module.exports = { VTERM_PAL, ANSI_PAL, decodePngRgb, nearestIdx, cellTopIdx, cellDiff };
+module.exports = { VTERM_PAL, ANSI_PAL, decodePngRgb, decodePngRgbAsync, nearestIdx, cellTopIdx, cellDiff };
