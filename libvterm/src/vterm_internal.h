@@ -300,6 +300,7 @@ void vterm_state_push_output_sprintf_CSI(VTermState *vts, const char *format, ..
 void vterm_screen_free(VTermScreen *screen);
 
 VTermEncoding *vterm_lookup_encoding(VTermEncodingType type, char designation);
+uint32_t vterm_encoding_remap_gl(const VTermEncoding *enc, uint32_t cp);
 
 int vterm_unicode_width(uint32_t codepoint);
 int vterm_unicode_is_combining(uint32_t codepoint);

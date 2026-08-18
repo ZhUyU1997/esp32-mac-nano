@@ -651,6 +651,37 @@ static void test_utf8_split_boundary(void)
 	tctx_free(&t);
 }
 
+static void test_utf8_charset_coexist(void)
+{
+	/* UTF-8 must keep decoding high bytes even after a G0 charset is
+	 * (re)designated: htop/ncurses leaves ESC(B (rmacs) on exit, which
+	 * previously routed ALL input through the single-byte usascii decoder
+	 * and turned a 3-byte UTF-8 sequence (E2 98 80 = U+2600) into 'b'. */
+	tctx_t t;
+	tctx_new(&t, 30, 80);
+
+	/* clean htop exit: ESC ( 0 (smacs) then ESC ( B (rmacs) */
+	tctx_feed(&t, "\033(0\033(B");
+	tctx_feed(&t, "\xe2\x98\x80");            /* U+2600 sun */
+	VTermScreenCell cell;
+	VTermPos p = { 0, 0 };
+	vterm_screen_get_cell(t.r.screen, p, &cell);
+	CHECK_EQ("utf8 after ESC(B: sun not 'b'", cell.chars[0], 0x2600, "cell(0,0)");
+
+	/* while DEC graphics is active, high bytes still decode as UTF-8 */
+	tctx_feed(&t, "\033(0\xe2\x98\x80");
+	p.col = 1;
+	vterm_screen_get_cell(t.r.screen, p, &cell);
+	CHECK_EQ("utf8 during ESC(0: sun decodes", cell.chars[0], 0x2600, "cell(0,1)");
+
+	/* and line drawing through the same G0 designation still works (on a
+	 * clean row: the 16px emoji above spills into its right neighbour) */
+	tctx_feed(&t, "\033[2;1H\033(0j\033(B");
+	CHECK_EQ("G0 line drawing intact", cell_char(&t.r, 1, 0), 0xD9, "cell(1,0)");
+
+	tctx_free(&t);
+}
+
 static void test_combining_chars(void)
 {
 	tctx_t t;
@@ -2035,6 +2066,7 @@ int main(void)
 	test_charset_line_drawing();
 	test_rep_and_wide();
 	test_utf8_split_boundary();
+	test_utf8_charset_coexist();
 	test_combining_chars();
 	test_reset();
 	test_scrollback();

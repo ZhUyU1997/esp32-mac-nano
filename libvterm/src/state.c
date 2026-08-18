@@ -309,22 +309,16 @@ static int on_text(const char bytes[], size_t len, void *user)
   int npoints = 0;
   size_t eaten = 0;
 
+  int gsingle = state->gsingle_set;
+
   VTermEncodingInstance *encoding =
-    state->gsingle_set     ? &state->encoding[state->gsingle_set] :
-    state->vt->mode.utf8   ?
-      /* UTF-8 mode: route ASCII chunks through encoding_utf8 too, so the
-       * multi-byte pending state survives a chunk boundary where the first
-       * chunk starts with an ASCII byte and the next with a high byte.
-       * Only when gl_set is still the default UTF-8 encoding; if an
-       * application selected a glyph set (e.g. DEC graphics via ESC(0)
-       * which maps single bytes), keep that instance. */
-      (state->encoding[state->gl_set].enc == state->encoding_utf8.enc ?
-          &state->encoding_utf8 : &state->encoding[state->gl_set]) :
+    gsingle              ? &state->encoding[gsingle] :
+    state->vt->mode.utf8 ? &state->encoding_utf8 :
     !(bytes[eaten] & 0x80) ? &state->encoding[state->gl_set] :
                              &state->encoding[state->gr_set];
 
   (*encoding->enc->decode)(encoding->enc, encoding->data,
-      codepoints, &npoints, state->gsingle_set ? 1 : maxpoints,
+      codepoints, &npoints, gsingle ? 1 : maxpoints,
       bytes, &eaten, len);
 
   /* There's a chance an encoding (e.g. UTF-8) hasn't found enough bytes yet
@@ -333,8 +327,21 @@ static int on_text(const char bytes[], size_t len, void *user)
   if(!npoints)
     return eaten;
 
-  if(state->gsingle_set && npoints)
+  if(gsingle && npoints)
     state->gsingle_set = 0;
+
+  /* UTF-8 mode: high bytes were just UTF-8 decoded above (pending state kept
+   * in the single encoding_utf8 instance, so multi-byte sequences survive a
+   * chunk boundary). Single-byte GL codepoints (0x20-0x7E) must still honour
+   * the active G0 charset so DEC special graphics (ESC(0) line drawing) keeps
+   * working; remap the ASCII range through G0's table only when a single-byte
+   * set is designated there. */
+  if(state->vt->mode.utf8 && !gsingle) {
+    VTermEncodingInstance *gl = &state->encoding[state->gl_set];
+    if(gl->enc != state->encoding_utf8.enc)
+      for(int k = 0; k < npoints; k++)
+        codepoints[k] = vterm_encoding_remap_gl(gl->enc, codepoints[k]);
+  }
 
   int i = 0;
 

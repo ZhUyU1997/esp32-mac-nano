@@ -227,3 +227,18 @@ VTermEncoding *vterm_lookup_encoding(VTermEncodingType type, char designation)
       return encodings[i].enc;
   return NULL;
 }
+
+/* UTF-8 mode: a decoded single-byte GL codepoint (0x20-0x7E) still honours
+ * the active G0 charset (DEC special graphics for box drawing). The UTF-8
+ * decoder has already turned ASCII bytes into codepoints; map those through
+ * a single-byte table when one is designated. Identity otherwise. */
+uint32_t vterm_encoding_remap_gl(const VTermEncoding *enc, uint32_t cp)
+{
+  if(cp < 0x20 || cp >= 0x80)
+    return cp;
+  if(enc->decode == decode_table) {
+    const struct StaticTableEncoding *table = (const struct StaticTableEncoding *)enc;
+    return table->chars[cp] ? table->chars[cp] : cp;
+  }
+  return cp;
+}
