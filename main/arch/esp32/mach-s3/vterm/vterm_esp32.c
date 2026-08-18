@@ -28,7 +28,6 @@
 
 static const char *TAG = "vterm";
 
-static uint8_t *s_pixels; /* RGB222 (64-colour) intermediate, 80*30*8*16 */
 static VTerm *s_vt;
 static term_renderer_t s_renderer;
 static mach_s3_blit_worker_t *s_blit_worker;
@@ -48,9 +47,9 @@ static int s_mouse_mode;         /* VTERM_PROP_MOUSE value (0 = off) */
 static bool s_sel_dragging;      /* left button held for text selection */
 
 /* mouse pointer save/restore (the fb is rendered on the fly, so a moving
- * pointer must be restored from a saved patch instead of re-blitting the
- * whole frame from s_pixels). The sprite is 16x16 plus a 1px black
- * outline, so the patch is 18x18. */
+ * pointer must be restored from a saved patch instead of re-rendering the
+ * frame). The sprite is 16x16 plus a 1px black outline, so the patch is
+ * 18x18. */
 #define SPRITE_PAD 1
 #define SPRITE_SZ (16 + 2 * SPRITE_PAD) /* 18 */
 static uint8_t s_ptr_save[SPRITE_SZ][SPRITE_SZ];
@@ -141,6 +140,13 @@ static int vterm_cb_settermprop(VTermProp prop, VTermValue *val, void *user)
 {
 	(void)user;
 	switch (prop) {
+	case VTERM_PROP_ALTSCREEN:
+		/* fullscreen apps (htop/vim) switch buffers on smcup/rmcup; the
+		 * buffer swap alone may not reach our damage callback, so force a
+		 * full-frame repaint or the alt-screen image stays on the fb */
+		s_dirty = true;
+		dmg_mark_full();
+		break;
 	case VTERM_PROP_CURSORVISIBLE:
 		s_renderer.cursor_visible = val->boolean;
 		s_dirty = true;
@@ -346,59 +352,6 @@ static void vterm_ptr_save_and_draw(framebuffer_t *lcd, int cx, int cy)
 	vterm_draw_cursor(lcd, cx, cy);
 }
 
-/* ---- blit job: runs on the blit worker after vsync ---------------------- */
-
-static void vterm_frame_blit(framebuffer_t *lcd, void *user_ctx)
-{
-	(void)user_ctx;
-	uint8_t *fb = (uint8_t *)framebuffer_get_framebuffer(lcd);
-	assert(fb != NULL);
-
-	/* rotate 90 degrees like the mac blit (panel mounted in landscape):
-	 * fb(dst_x, dst_y) <- s_pixels(col = dst_x, row = h-1-dst_y). s_pixels
-	 * holds the 6-bit colour in bits 5..0; shift to bits 7..2 so the panel
-	 * data lines (data_gpio_nums[2..7]) see the colour.
-	 * Transpose in 16x16 blocks through a stack buffer: both the s_pixels
-	 * reads and the fb writes are linear runs. The naive per-pixel version
-	 * strides 640 bytes on every read and thrashes the 32KB data cache —
-	 * that was the measured 329 ms bottleneck (#1 word-packing didn't help
-	 * because the blit is read-bound, not write-bound). */
-	const int src_w = VTERM_COLS * TERM_CELL_W; /* 640 */
-	const int src_h = VTERM_ROWS * TERM_CELL_H; /* 480 */
-	const int fb_w = (int)lcd->width;           /* 480 */
-	const int fb_h = (int)lcd->height;          /* 640 */
-	uint8_t blk[16][16];
-	for (int by = 0; by < src_h; by += 16) {
-		for (int bx = 0; bx < src_w; bx += 16) {
-			/* read the 16x16 block linearly, transposing into blk */
-			for (int y = 0; y < 16; y++)
-				for (int x = 0; x < 16; x++)
-					blk[x][y] = s_pixels[(size_t)(by + y) * src_w + (bx + x)];
-			/* write it out: fb(dst_x = by+y, dst_y = 639-bx-x) as
-			 * 16-byte runs, 4 pixels per uint32 store */
-			for (int x = 0; x < 16; x++) {
-				uint32_t *row = (uint32_t *)(fb + (size_t)(fb_h - 1 - bx - x) * fb_w + by);
-				row[0] = (uint32_t)(blk[x][0] << 2) | ((uint32_t)(blk[x][1] << 2) << 8) |
-				         ((uint32_t)(blk[x][2] << 2) << 16) | ((uint32_t)(blk[x][3] << 2) << 24);
-				row[1] = (uint32_t)(blk[x][4] << 2) | ((uint32_t)(blk[x][5] << 2) << 8) |
-				         ((uint32_t)(blk[x][6] << 2) << 16) | ((uint32_t)(blk[x][7] << 2) << 24);
-				row[2] = (uint32_t)(blk[x][8] << 2) | ((uint32_t)(blk[x][9] << 2) << 8) |
-				         ((uint32_t)(blk[x][10] << 2) << 16) | ((uint32_t)(blk[x][11] << 2) << 24);
-				row[3] = (uint32_t)(blk[x][12] << 2) | ((uint32_t)(blk[x][13] << 2) << 8) |
-				         ((uint32_t)(blk[x][14] << 2) << 16) | ((uint32_t)(blk[x][15] << 2) << 24);
-			}
-		}
-	}
-}
-
-/* Blit job (runs on the blit worker after vsync): frame + pointer overlay. */
-static void vterm_blit_job(framebuffer_t *lcd, void *user_ctx)
-{
-	(void)user_ctx;
-	vterm_frame_blit(lcd, NULL);
-	vterm_ptr_save_and_draw(lcd, s_mouse_x, s_mouse_y);
-}
-
 /* ---- render helper ------------------------------------------------------ */
 
 static void vterm_render_if_needed(void)
@@ -456,7 +409,6 @@ static void vterm_render_if_needed(void)
 			vterm_ptr_save_and_draw(s_lcd, s_mouse_x, s_mouse_y);
 		}
 
-		bool fb_ok = true;
 		if (ptr_hit) {
 			/* rows above the pointer: sprite untouched */
 			if (r0 <= pr0 - 1) {
@@ -464,44 +416,38 @@ static void vterm_render_if_needed(void)
 				s_renderer.dirty_r1 = pr0 - 1;
 				s_renderer.dirty_c0 = c0;
 				s_renderer.dirty_c1 = c1;
-				fb_ok = term_render_frame_fb(&s_renderer);
+				term_render_frame_fb(&s_renderer);
 			}
 			/* the pointer's rows: erase the sprite and redraw immediately.
 			 * One extra cell left of the sprite is repainted too, so a
 			 * wide glyph whose gap cell the sprite sits on still gets its
 			 * anchor flushed (2-cell width) and the sprite fully erased. */
-			if (fb_ok && pr0 <= r1) {
+			if (pr0 <= r1) {
 				s_renderer.dirty_r0 = pr0;
 				s_renderer.dirty_r1 = pr1;
 				s_renderer.dirty_c0 = c0 < pc0 - 1 ? c0 : pc0 - 1;
 				s_renderer.dirty_c1 = c1 > pc1 ? c1 : pc1;
 				if (s_renderer.dirty_c0 < 0)
 					s_renderer.dirty_c0 = 0;
-				fb_ok = term_render_frame_fb(&s_renderer);
-				if (fb_ok)
-					vterm_ptr_save_and_draw(s_lcd, s_mouse_x, s_mouse_y);
+				term_render_frame_fb(&s_renderer);
+				vterm_ptr_save_and_draw(s_lcd, s_mouse_x, s_mouse_y);
 			}
 			/* rows below the pointer: sprite untouched again */
-			if (fb_ok && pr1 + 1 <= r1) {
+			if (pr1 + 1 <= r1) {
 				s_renderer.dirty_r0 = pr1 + 1;
 				s_renderer.dirty_r1 = r1;
 				s_renderer.dirty_c0 = c0;
 				s_renderer.dirty_c1 = c1;
-				fb_ok = term_render_frame_fb(&s_renderer);
+				term_render_frame_fb(&s_renderer);
 			}
 		} else {
 			s_renderer.dirty_r0 = r0;
 			s_renderer.dirty_r1 = r1;
 			s_renderer.dirty_c0 = c0;
 			s_renderer.dirty_c1 = c1;
-			fb_ok = term_render_frame_fb(&s_renderer);
+			term_render_frame_fb(&s_renderer);
 		}
 		s_renderer.fb_out = NULL;
-		if (!fb_ok) {
-			/* wide-glyph spill: fall back to s_pixels + full blit */
-			term_render_frame(&s_renderer);
-			mach_s3_blit_worker_submit_async(s_blit_worker, vterm_blit_job, NULL);
-		}
 	} else if (s_cursor_dirty) {
 		/* mouse moved: restore + redraw the pointer, no re-render */
 		s_cursor_dirty = false;
@@ -673,15 +619,6 @@ void vterm_esp32_selftest(framebuffer_t *lcd, mach_s3_blit_worker_t *blit_worker
 	s_fb_w = (int)lcd->width;
 	s_fb_h = (int)lcd->height;
 
-	/* allocate once and reuse across mode entries: re-entering the vterm
-	 * mode must not leak/re-malloc the pixel buffer (PSRAM can fragment
-	 * after the Mac allocates) */
-	if (!s_pixels) {
-		s_pixels = heap_caps_malloc((size_t)VTERM_ROWS * VTERM_COLS * TERM_CELL_W *
-		                                TERM_CELL_H * sizeof(uint8_t),
-		                            MALLOC_CAP_SPIRAM);
-		assert(s_pixels != NULL);
-	}
 	if (!s_sb) {
 		s_sb = heap_caps_malloc((size_t)VTERM_SB_CAP * VTERM_COLS * sizeof(VTermScreenCell),
 		                        MALLOC_CAP_SPIRAM);
@@ -710,7 +647,6 @@ void vterm_esp32_selftest(framebuffer_t *lcd, mach_s3_blit_worker_t *blit_worker
 		vterm_screen_reset(scr0, 1);
 		vterm_screen_set_callbacks(scr0, &s_callbacks, NULL);
 		term_render_init(&s_renderer, s_vt, NULL);
-		s_renderer.pixels8 = s_pixels;
 		s_renderer.sb_get_cell = vterm_sb_get_cell;
 		s_renderer.sb_user = NULL;
 		s_renderer.cursor_visible = true;
@@ -734,16 +670,24 @@ void vterm_esp32_selftest(framebuffer_t *lcd, mach_s3_blit_worker_t *blit_worker
 	s_sel_dragging = false;
 	s_mouse_x = (VTERM_COLS * TERM_CELL_W) / 2;
 	s_mouse_y = (VTERM_ROWS * TERM_CELL_H) / 2;
-	term_render_frame(&s_renderer);
+	/* initial frame: paint the empty screen straight into the fb */
+	s_renderer.fb_out = s_fb;
+	s_renderer.fb_w = s_fb_w;
+	s_renderer.fb_h = s_fb_h;
+	s_renderer.dirty_r0 = 0;
+	s_renderer.dirty_r1 = VTERM_ROWS - 1;
+	s_renderer.dirty_c0 = 0;
+	s_renderer.dirty_c1 = VTERM_COLS - 1;
+	term_render_frame_fb(&s_renderer);
+	s_renderer.fb_out = NULL;
 
-	/* write after a vsync, exactly like the blit worker would (the
-	 * submit_and_wait round trip misbehaves in this context — returns
-	 * false despite a valid worker) */
+	/* wait for a vsync before overlaying the pointer, exactly like the
+	 * blit worker would (the submit_and_wait round trip misbehaves in this
+	 * context — returns false despite a valid worker) */
 	if (!framebuffer_wait_vsync(lcd, 100)) {
 		ESP_LOGW(TAG, "vsync wait timeout, writing anyway");
 	}
-	vterm_frame_blit(lcd, NULL);
-	/* the frame blit no longer draws the pointer: capture the patch under
+	/* the frame render does not draw the pointer: capture the patch under
 	 * the centre position and overlay the sprite, so the first mouse move
 	 * can restore it (the old code left a ghost sprite at the centre) */
 	vterm_ptr_save_and_draw(lcd, s_mouse_x, s_mouse_y);

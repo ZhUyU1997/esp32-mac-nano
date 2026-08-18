@@ -94,8 +94,7 @@ static uint32_t color_to_u32(const VTermColor *col)
 
 /* RGB888 -> 6-bit (64 colours) for the ESP32 panel's RGB222 data bus.
  * Channel levels {0,82,165,247} (R/B) and {0,81,162,243} (G); thresholds
- * are the channel midpoints 41/123/206 and 40/121/202. Unused by the host
- * SDL renderer (pixels8 == NULL there). */
+ * are the channel midpoints 41/123/206 and 40/121/202. */
 static inline uint8_t rgb888_to_64(uint32_t rgb)
 {
 	uint8_t r = (rgb >> 16) & 0xFF;
@@ -124,15 +123,13 @@ static bool s_cache_cursor_here, s_cache_cur_block;
 static uint32_t s_cache_on_b, s_cache_off_b;
 static uint8_t s_cache_on_q, s_cache_off_q;
 
-/* Write one pixel at absolute (px, py): to the direct rotated fb when
- * fb_out is set (transposed into the current cell's buffer), otherwise to
- * pixels8. q is the pre-quantized 6-bit colour (rgb888_to_64 result). */
+/* Write one pixel at absolute (px, py) into the current cell's buffer
+ * (transposed: [gx][gy]), later flushed to the fb by flush_cell_fb.
+ * q is the pre-quantized 6-bit colour (rgb888_to_64 result). */
 static inline void rp_put(term_renderer_t *r, int px, int py, uint8_t q)
 {
-	if (r->fb_out)
-		s_cell[px - s_cell_px0][py - s_cell_py0] = (uint8_t)(q << 2);
-	else
-		r->pixels8[py * r->win_w + px] = q;
+	(void)r;
+	s_cell[px - s_cell_px0][py - s_cell_py0] = (uint8_t)(q << 2);
 }
 
 /* ---- CJK: Unicode -> 16x16 glyph (binary search, no GB2312 hop) -------- */
@@ -210,21 +207,33 @@ static const uint8_t *emoji_glyph(uint32_t cp)
 	return NULL;
 }
 
-/* paint a full-width 16x16 emoji spanning two cell columns */
+/* paint an emoji glyph. wide = cell->width >= 2 renders the full 16x16
+ * spanning two cells; a width-1 cell renders only the left 8 columns of
+ * the bitmap, so the glyph never spills into the next cell (matches
+ * xterm, where these codepoints are single-width). */
 static bool paint_emoji(term_renderer_t *r, int row, int col, uint32_t cp,
-                        uint8_t on_q)
+                        uint8_t on_q, bool wide)
 {
 	const uint8_t *g = emoji_glyph(cp);
 	if (!g)
 		return false;
 	const int px0 = col * TERM_CELL_W;
 	const int py0 = row * TERM_CELL_H;
-	for (int gy = 0; gy < 16; gy++) {
-		uint8_t lo = g[gy * 2], hi = g[gy * 2 + 1];
-		for (int gx = 0; gx < 16; gx++) {
-			uint8_t byte = (gx < 8) ? lo : hi;
-			if ((byte >> (7 - (gx & 7))) & 1)
-				rp_put(r, px0 + gx, py0 + gy, on_q);
+	if (wide) {
+		for (int gy = 0; gy < 16; gy++) {
+			uint8_t lo = g[gy * 2], hi = g[gy * 2 + 1];
+			for (int gx = 0; gx < 16; gx++) {
+				uint8_t byte = (gx < 8) ? lo : hi;
+				if ((byte >> (7 - (gx & 7))) & 1)
+					rp_put(r, px0 + gx, py0 + gy, on_q);
+			}
+		}
+	} else {
+		for (int gy = 0; gy < TERM_CELL_H; gy++) {
+			uint8_t line = g[gy * 2]; /* left 8 columns of the 16x16 bitmap */
+			for (int gx = 0; gx < TERM_CELL_W; gx++)
+				if ((line >> (7 - gx)) & 1)
+					rp_put(r, px0 + gx, py0 + gy, on_q);
 		}
 	}
 	return true;
@@ -358,9 +367,7 @@ static void cell_style(term_renderer_t *r, int row, int col, const VTermScreenCe
 	s_cache_off_q = *off_q;
 }
 
-/* pass 1: background — spans exactly the layout width, like a real
- * terminal.  Wide glyphs (16px render, 1-cell layout) never bleed their
- * background into the next cell. */
+/* background — spans exactly the layout width. */
 static void paint_background(term_renderer_t *r, int row, int col)
 {
 	VTermScreenCell cell;
@@ -373,21 +380,13 @@ static void paint_background(term_renderer_t *r, int row, int col)
 	uint8_t on_q, off_q;
 	cell_style(r, row, col, &cell, &cursor_here, &cur_block, &on_b, &off_b, &on_q, &off_q);
 	int w = (cell.width >= 2) ? 2 : 1;
-	const int px0 = col * TERM_CELL_W;
-	const int py0 = row * TERM_CELL_H;
-	if (r->fb_out) {
-		/* uniform background: one memset (transpose is a no-op for a
-		 * solid cell), instead of 128 per-pixel rp_put calls */
-		memset(s_cell, (int)(off_q << 2), (size_t)w * TERM_CELL_W * TERM_CELL_H);
-	} else {
-		for (int y = 0; y < TERM_CELL_H; y++)
-			for (int x = 0; x < w * TERM_CELL_W; x++)
-				rp_put(r, px0 + x, py0 + y, off_q);
-	}
+	/* uniform background: one memset (transpose is a no-op for a solid
+	 * cell), instead of 128 per-pixel rp_put calls */
+	memset(s_cell, (int)(off_q << 2), (size_t)w * TERM_CELL_W * TERM_CELL_H);
 }
 
-/* pass 2: glyph — natural width (8px or 16px).  Only on-pixels are
- * written; the background pass already filled the cell. */
+/* glyph — natural width (8px or 16px).  Only on-pixels are written; the
+ * background was already filled (paint_background). */
 static void paint_glyph(term_renderer_t *r, int row, int col)
 {
 	VTermScreenCell cell;
@@ -475,20 +474,50 @@ static void paint_glyph(term_renderer_t *r, int row, int col)
 				rp_put(r, px0 + x, py0 + TERM_CELL_H / 2, on_q);
 		return;
 	}
-	/* emoji: 16x16, rendered even when layout width is 1 (wide glyph) */
-	if (paint_emoji(r, row, col, cp, on_q))
-		return;
-	/* TUI symbols from unifont: fixed 16px height, natural width — a
-	 * 16x16 source renders 16px wide (may spill into the next cell),
-	 * an 8x16 source renders 8px */
+	/* single-width cells: prefer the unifont symbol glyphs — a native
+	 * 8px design (8x16 source) or the left 8 columns of a 16x16 source,
+	 * unlike a 16x16 emoji cropped to its left 8 columns (which can look
+	 * like an unrelated letter, e.g. ☀ -> 'b'). The emoji bitmap serves
+	 * double-width cells (full 16x16) or single-width fallback when no
+	 * symbol exists. */
 	int sw = 1;
 	const uint8_t *sg = NULL;
-	if (cell.width >= 2)
-		sg = emoji_glyph(cp);    /* full-width emoji */
+	if (cell.width < 2) {
+		sg = symbol_glyph(cp, &sw);
+		if (sg) {
+			if (sw == 1) {
+				for (int gy = 0; gy < TERM_CELL_H; gy++) {
+					uint8_t line = sg[gy];
+					for (int gx = 0; gx < TERM_CELL_W; gx++)
+						if ((line >> (7 - gx)) & 1)
+							rp_put(r, px0 + gx, py0 + gy, on_q);
+				}
+				return;
+			}
+			/* 16x16 source in a width-1 cell: left 8 columns */
+			for (int gy = 0; gy < TERM_CELL_H; gy++) {
+				uint8_t line = sg[gy * 2];
+				for (int gx = 0; gx < TERM_CELL_W; gx++)
+					if ((line >> (7 - gx)) & 1)
+						rp_put(r, px0 + gx, py0 + gy, on_q);
+			}
+			return;
+		}
+	}
+	/* emoji: full 16x16 when the cell is double-width, otherwise the
+	 * left 8 columns (single-width, no spill) */
+	{
+		bool emoji_hit = paint_emoji(r, row, col, cp, on_q, cell.width >= 2);
+		if (emoji_hit)
+			return;
+	}
+	/* TUI symbols from unifont: fixed 16px height, natural width — a
+	 * 16x16 source renders 16px only when the cell is double-width; a
+	 * width-1 cell renders the left 8 columns (no spill) */
 	if (!sg)
 		sg = symbol_glyph(cp, &sw);
 	if (sg) {
-		if (sw >= 2) {
+		if (sw >= 2 && cell.width >= 2) {
 			for (int gy = 0; gy < 16; gy++) {
 				uint8_t lo = sg[gy * 2], hi = sg[gy * 2 + 1];
 				for (int gx = 0; gx < 16; gx++) {
@@ -496,6 +525,14 @@ static void paint_glyph(term_renderer_t *r, int row, int col)
 					if ((byte >> (7 - (gx & 7))) & 1)
 						rp_put(r, px0 + gx, py0 + gy, on_q);
 				}
+			}
+		} else if (sw >= 2) {
+			/* 16x16 source in a width-1 cell: left 8 columns */
+			for (int gy = 0; gy < TERM_CELL_H; gy++) {
+				uint8_t line = sg[gy * 2];
+				for (int gx = 0; gx < TERM_CELL_W; gx++)
+					if ((line >> (7 - gx)) & 1)
+						rp_put(r, px0 + gx, py0 + gy, on_q);
 			}
 		} else {
 			for (int gy = 0; gy < TERM_CELL_H; gy++) {
@@ -529,40 +566,7 @@ void term_render_init(term_renderer_t *r, VTerm *vt, uint32_t *pixels)
 	r->blink_on = true;
 }
 
-void term_render_frame(term_renderer_t *r)
-{
-	s_cache_cell_valid = false;
-	s_cache_style_valid = false;
-	int r0 = 0, r1 = -1, c_top = 0;
-	if (r->sel_active) {
-		r0 = r->sel_anchor.row < r->sel_cur.row ? r->sel_anchor.row : r->sel_cur.row;
-		r1 = r->sel_anchor.row > r->sel_cur.row ? r->sel_anchor.row : r->sel_cur.row;
-		c_top = (r->sel_anchor.row == r0) ? r->sel_anchor.col : r->sel_cur.col;
-	}
-	for (int row = 0; row < r->rows; row++) {
-		/* last non-blank col of the TOP row, for the streaming highlight
-		 * (read through get_render_cell so a scrolled view resolves
-		 * scrollback content correctly). Interior rows are full width and
-		 * the bottom row is a hard range, so they do not need the scan. */
-		r->sel_line_end = -1;
-		if (r->sel_active && row == r0 && row != r1) {
-			for (int col = c_top; col < r->cols; col++) {
-				VTermScreenCell cell;
-				if (get_render_cell(r, row, col, &cell) && cell.chars[0] != 0 &&
-				    cell.chars[0] != (uint32_t)-1)
-					r->sel_line_end = col;
-			}
-		}
-		/* pass 1: background spans exactly the layout width; pass 2:
-		 * glyphs at natural width (may spill into the next column) */
-		for (int col = 0; col < r->cols; col++)
-			paint_background(r, row, col);
-		for (int col = 0; col < r->cols; col++)
-			paint_glyph(r, row, col);
-	}
-}
-
-/* ---- direct rotated-fb output (on-the-fly, no s_pixels) ---------------- */
+/* ---- direct rotated-fb output ----------------------------------------- */
 
 static inline uint32_t fb_pack4(uint8_t a, uint8_t b, uint8_t c, uint8_t d)
 {
@@ -583,31 +587,6 @@ static void flush_cell_fb(term_renderer_t *r, int w)
 		row[2] = fb_pack4(s_cell[gx][8], s_cell[gx][9], s_cell[gx][10], s_cell[gx][11]);
 		row[3] = fb_pack4(s_cell[gx][12], s_cell[gx][13], s_cell[gx][14], s_cell[gx][15]);
 	}
-}
-
-/* True if the cell's glyph renders 16px wide while its layout width is 1
- * (emoji / wide symbol), i.e. it spills into the next cell. The single-pass
- * fb renderer cannot handle this (the neighbour's background would overwrite
- * the spill), so such frames fall back to the s_pixels path. */
-static bool cell_spills(term_renderer_t *r, const VTermScreenCell *cell)
-{
-	if (cell->width >= 2)
-		return false;
-	uint32_t cp = cell->chars[0];
-	if (cp == 0)
-		cp = ' ';
-	if (is_space_cp(cp))
-		return false;
-	if ((cell->attrs.blink && !r->blink_on) || cell->attrs.conceal)
-		return false;
-	uint8_t idx = term_unicode_to_cp437(cp);
-	if (idx != 0xFF || cp == 0xFF)
-		return false; /* VGA 8px */
-	if (emoji_glyph(cp))
-		return true;
-	int sw = 1;
-	const uint8_t *sg = symbol_glyph(cp, &sw);
-	return sg && sw >= 2;
 }
 
 bool term_render_frame_fb(term_renderer_t *r)
@@ -645,8 +624,6 @@ bool term_render_frame_fb(term_renderer_t *r)
 				memset(&cell, 0, sizeof(cell));
 			if (cell.chars[0] == (uint32_t)-1 || cell.width == 0)
 				continue; /* gap/continuation: covered by the anchor cell */
-			if (cell_spills(r, &cell))
-				return false; /* fall back to s_pixels path */
 			s_cell_px0 = col * TERM_CELL_W;
 			s_cell_py0 = row * TERM_CELL_H;
 			memset(s_cell, 0, sizeof(s_cell));

@@ -19,8 +19,7 @@ typedef struct {
 	VTermScreen *screen;
 	VTermState *state;
 	uint32_t *pixels;   /* RGB888, win_w * win_h, caller-owned */
-	uint8_t *pixels8;  /* optional RGB222 (64-colour) output, win_w * win_h */
-	uint8_t *fb_out;   /* optional direct rotated output (RGB222<<2) */
+	uint8_t *fb_out;   /* direct rotated output (RGB222<<2), caller-owned */
 	int fb_w;          /* fb_out width (480) */
 	int fb_h;          /* fb_out height (640) */
 	int rows;
@@ -52,12 +51,9 @@ typedef struct {
 /* Attach a renderer to a libvterm instance. */
 void term_render_init(term_renderer_t *r, VTerm *vt, uint32_t *pixels);
 
-/* Paint the whole frame from the current screen state. */
-void term_render_frame(term_renderer_t *r);
-
-/* Paint the whole frame directly into the rotated fb (fb_out must be set).
- * Returns false if a wide-glyph spill cell forces a fallback to the
- * s_pixels path (term_render_frame + blit). */
+/* Paint the whole frame (or the dirty rect) directly into the rotated fb
+ * (fb_out must be set). Single pass; glyph render width never exceeds the
+ * layout width, so there is no spill / fallback path. */
 bool term_render_frame_fb(term_renderer_t *r);
 
 /* Unicode -> CP437 glyph index (box drawing / blocks / common symbols). */
